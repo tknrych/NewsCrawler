@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 2em; max-width: 800px; margin: auto; }
+        .content { border: 1px solid #ddd; padding: 2em; border-radius: 5px; background: #f9f9f9; }
+        a { color: #007bff; }
+    </style>
+</head>
+<body>
+    <p><a href="/api/front">← 記事一覧に戻る</a></p>
+    <div class="content">
+        {{ content | safe }}
+    </div>
+</body>
+</html>

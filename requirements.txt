@@ -1,0 +1,13 @@
+azure-functions
+requests
+azure-storage-queue
+azure-storage-blob
+azure-cosmos
+beautifulsoup4
+lxml
+openai
+fastapi
+jinja2
+python-multipart
+uvicorn
+markdown

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>News Crawler - トップ</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 2em; }
+        h1 { color: #333; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin-bottom: 1em; border-bottom: 1px solid #eee; padding-bottom: 1em; }
+        a { text-decoration: none; color: #007bff; }
+        a:hover { text-decoration: underline; }
+        small { color: #888; }
+    </style>
+</head>
+<body>
+    <h1>要約済み記事一覧</h1>
+    <ul>
+        {% for article in articles %}
+        <li>
+            <a href="/api/article/{{ article.id }}">
+                <strong>{{ article.title }}</strong>
+            </a>
+            <br>
+            <small>Source: {{ article.source }} | Summarized at: {{ article.processed_at }}</small>
+        </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

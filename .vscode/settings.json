@@ -1,0 +1,5 @@
+{
+    "azureFunctions.projectLanguage": "Python",
+    "azureFunctions.projectRuntime": "~4",
+    "python.defaultInterpreterPath": ".venv/Scripts/python.exe"
+}
