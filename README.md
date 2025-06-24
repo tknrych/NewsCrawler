@@ -116,7 +116,7 @@ func start
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under theApache License 2.0 License. See `LICENSE` for more information.
 
 -----
 
@@ -238,4 +238,4 @@ func start
 
 ## ライセンス
 
-このプロジェクトはMITライセンスの下で配布されています。詳細については `LICENSE` ファイルをご覧ください。
+このプロジェクトはApache License 2.0ライセンスの下で配布されています。詳細については `LICENSE` ファイルをご覧ください。
