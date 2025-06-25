@@ -23,24 +23,59 @@
 
         /* 左サイドバー (記事一覧) */
         .sidebar {
-            width: 300px;
-            min-width: 250px;
+            width: 350px; /* 少し幅を広げる */
+            min-width: 300px;
             flex-shrink: 0;
             background-color: #fff;
             border-right: 1px solid #e0e0e0;
             overflow-y: auto;
             padding: 20px;
-            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+            box-sizing: border-box;
         }
 
         .sidebar h2 {
             font-size: 1.5em;
             color: #2c3e50;
+            margin-top: 0;
             margin-bottom: 20px;
             border-bottom: 2px solid #007bff;
             padding-bottom: 10px;
         }
 
+/* タブナビゲーション (新デザイン) */
+        .tab-nav {
+            display: flex;
+            background-color: #e9ecef; /* コンテナの背景色 */
+            border-radius: 8px; /* 角を丸くする */
+            padding: 4px; /* 内側の余白 */
+            margin-bottom: 20px;
+        }
+
+        .tab-nav button {
+            flex-grow: 1; /* すべてのボタンが均等に幅を占める */
+            background-color: transparent; /* 通常時の背景は透明に */
+            border: none; /* 枠線をなくす */
+            padding: 8px 10px;
+            border-radius: 6px; /* ボタンの角を丸くする */
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500; /* 少し太字に */
+            color: #495057;
+            text-align: center;
+            transition: all 0.3s ease; /* スムーズなアニメーション効果 */
+        }
+
+        .tab-nav button:not(.active):hover {
+            background-color: #dee2e6; /* ホバー時に少し色を付ける */
+        }
+
+        .tab-nav button.active {
+            background-color: #fff; /* 選択中のタブの背景色 */
+            color: #007bff; /* 選択中のタブの文字色 */
+            font-weight: bold;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* わずかに影を付けて立体感を出す */
+        }
+        
         .article-list {
             list-style-type: none;
             padding: 0;
@@ -65,8 +100,6 @@
             font-weight: bold;
             font-size: 1.1em;
             margin-bottom: 5px;
-            white-space: normal;
-            word-break: break-word;
         }
 
         .article-list li a:hover {
@@ -81,43 +114,8 @@
         /* メインコンテンツエリア */
         .main-content {
             flex-grow: 1;
-            padding: 0;
             overflow-y: auto;
-            overflow-x: hidden;
-            background-color: #fff;
-        }
-
-        /* タブナビゲーション */
-        .tab-nav {
-            background-color: #e2e6ea;
-            padding: 10px 40px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            border-bottom: 1px solid #d0d0d0;
-        }
-
-        .tab-nav button {
-            background-color: #f0f0f0;
-            border: 1px solid #ccc;
-            padding: 8px 15px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.9em;
-            color: #555;
-            transition: all 0.3s ease;
-        }
-
-        .tab-nav button:hover {
-            background-color: #e0e0e0;
-            border-color: #bbb;
-        }
-
-        .tab-nav button.active {
-            background-color: #007bff;
-            color: #fff;
-            border-color: #007bff;
-            font-weight: bold;
+            background-color: #fafafa;
         }
 
         /* 記事詳細コンテナ */
@@ -218,10 +216,11 @@
                 height: 100vh;
                 box-sizing: border-box;
                 display: none; 
+                background-color: #fff;
             }
 
-            .article-detail-container, .tab-nav {
-                padding: 15px;
+            .article-detail-container {
+                padding: 20px;
             }
 
             .article-detail-container h1 {
@@ -238,17 +237,16 @@
     <div class="dashboard-container">
         <div class="sidebar">
             <h2>最新記事一覧</h2>
-            <ul class="article-list" id="article-list">
-                </ul>
-        </div>
-        <div class="main-content">
             <div class="tab-nav">
                 <button class="tab-button active" data-source="All">All</button>
                 <button class="tab-button" data-source="HackerNews">HackerNews</button>
                 <button class="tab-button" data-source="arXiv cs.AI">arXiv cs.AI</button>
                 <button class="tab-button" data-source="arXiv cs.LG">arXiv cs.LG</button>
             </div>
-            
+            <ul class="article-list" id="article-list">
+                </ul>
+        </div>
+        <div class="main-content">
             <div id="article-detail" class="article-detail-container">
                 <p>記事を選択してください。</p>
             </div>
