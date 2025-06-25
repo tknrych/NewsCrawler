@@ -9,6 +9,7 @@ import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
+import certifi
 
 from azure.cosmos import CosmosClient, exceptions
 from azure.storage.blob import BlobServiceClient
@@ -16,6 +17,7 @@ from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
 from openai import AzureOpenAI
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -26,7 +28,6 @@ app = func.FunctionApp()
 # ===================================================================
 @app.schedule(schedule="0 0 * * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
-    # ★★★ 修正箇所1: メッセージに "rank" を追加 ★★★
     logging.info('Hacker News Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -48,13 +49,11 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         except Exception:
             pass
         sent_count = 0
-        # enumerateを使って、リストのインデックスを順位(rank)として利用
         for rank, story_id in enumerate(story_ids):
             story_detail_url = f"{HACKER_NEWS_API_BASE}/item/{story_id}.json"
-            story_res = requests.get(story_detail_url, timeout=15)
+            story_res = requests.get(story_detail_url, timeout=15, verify=False)
             story_data = story_res.json()
             if story_data and "url" in story_data:
-                # メッセージにrank情報を追加
                 message = {
                     "source": "HackerNews", 
                     "url": story_data["url"], 
@@ -69,7 +68,6 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-# (ArXivCollector, TechCrunchCollector, AINewsCollectorは変更なし)
 @app.schedule(schedule="0 5 * * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
@@ -89,7 +87,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
             logging.info(f"Fetching articles for category: {category}")
             search_query = f'cat:{category}'
             api_url = f'{BASE_API_URL}search_query={search_query}&sortBy=submittedDate&sortOrder=descending&max_results={max_results}'
-            response = requests.get(api_url, timeout=20)
+            response = requests.get(api_url, timeout=20, verify=False)
             response.raise_for_status()
             xml_data = response.content
             namespace = {'atom': 'http://www.w3.org/2005/Atom'}
@@ -177,13 +175,31 @@ def AINewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
+@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
+def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
+    app_url = os.environ.get("APP_URL")
+    if not app_url:
+        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
+        return
+    warm_up_url = f"{app_url}/api/front"
+    try:
+        logging.info(f"Sending warm-up request to {warm_up_url}...")
+        response = requests.get(warm_up_url, timeout=10, verify=False)
+        if response.status_code == 200:
+            logging.info(f"Warm-up request successful. Status: {response.status_code}")
+        else:
+            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Warm-up request failed: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during warm-up: {e}")
+
 # ===================================================================
 # Function 2: Article Summarizer
 # ===================================================================
 @app.queue_trigger(arg_name="msg", queue_name="urls-to-summarize",
                    connection="MyStorageQueueConnectionString")
 def ArticleSummarizer(msg: func.QueueMessage) -> None:
-    # ★★★ 修正箇所2: メッセージからrankを取得 ★★★
     logging.info(f"--- ArticleSummarizer INVOKED. MessageId: {msg.id} ---")
     
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
@@ -201,8 +217,22 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
 
         try:
-            articles_container.read_item(item=item_id, partition_key=item_id)
-            logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
+            existing_item = articles_container.read_item(item=item_id, partition_key=item_id)
+            new_rank = message.get("rank")
+            source = message.get("source")
+            
+            if source == "HackerNews" and new_rank is not None:
+                old_rank = existing_item.get('rank')
+                if old_rank != new_rank:
+                    logging.info(f"Rank for article {url} changed from {old_rank} to {new_rank}. Updating.")
+                    existing_item['rank'] = new_rank
+                    existing_item['processed_at'] = datetime.now(timezone.utc).isoformat()
+                    articles_container.upsert_item(body=existing_item)
+                else:
+                    logging.info(f"Article {url} already exists with the same rank. Skipping.")
+            else:
+                logging.info(f"Article {url} already exists. Skipping processing.")
+            
             return
         except exceptions.CosmosResourceNotFoundError:
             logging.info(f"New article. Proceeding with summarization. URL: {url}")
@@ -210,8 +240,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
-        # rankを取得。HackerNews以外の場合はNoneになる
-        rank = message.get("rank") 
+        rank = message.get("rank")
         
         logging.info(f"Processing article: {original_title} ({url})")
         
@@ -252,7 +281,6 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 # ===================================================================
 # Helper Functions
 # ===================================================================
-# (_get_summary_and_title_from_azure_openai, _save_summary_to_blobは変更なし)
 def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str, str]:
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -302,7 +330,6 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-# ★★★ 修正箇所3: ヘルパー関数にrank引数を追加 ★★★
 def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str, original_title: str, rank: int = None):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
@@ -321,10 +348,8 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
         'processed_at': datetime.now(timezone.utc).isoformat(),
         'status': 'summarized'
     }
-    # rankがNoneでない場合のみ、item_bodyに追加
     if rank is not None:
         item_body['rank'] = rank
-        
     articles_container.upsert_item(body=item_body)
     logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}")
 
@@ -332,13 +357,13 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
 # Web UI (FastAPI)
 # ===================================================================
 fast_app = FastAPI()
+fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
-# ★★★ 修正箇所4: データ取得APIのクエリを修正 ★★★
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data():
     try:
@@ -346,38 +371,27 @@ async def get_all_articles_data():
         cosmos_key = os.environ.get('COSMOS_KEY')
         if not cosmos_endpoint or not cosmos_key:
             raise HTTPException(status_code=500, detail="Cosmos DBの接続設定が不完全です。")
-
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-
         all_items = []
         categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG', 'TechCrunch', 'AI News']
-        
         for category in categories:
-            # HackerNewsの場合はrankで、それ以外はprocessed_atでソート
             if category == 'HackerNews':
                 query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.rank ASC OFFSET 0 LIMIT 200"
             else:
                 query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
-            
             items = list(articles_container.query_items(
                 query=query,
                 enable_cross_partition_query=True
             ))
             all_items.extend(items)
-        
-        # UIの「All」タブで表示する際の並び順は、処理時刻の新しい順とする
         all_items.sort(key=lambda x: x.get('processed_at', ''), reverse=True)
-
         return all_items
-
     except Exception as e:
         logging.error(f"Error fetching all articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
 
-
-# (read_root, read_single_article_page, read_articleは変更なし)
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -463,22 +477,3 @@ async def read_article(request: Request, article_id: str):
     except Exception as e:
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
-
-@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
-def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
-    app_url = os.environ.get("APP_URL")
-    if not app_url:
-        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
-        return
-    warm_up_url = f"{app_url}/api/front"
-    try:
-        logging.info(f"Sending warm-up request to {warm_up_url}...")
-        response = requests.get(warm_up_url, timeout=10, verify=False)
-        if response.status_code == 200:
-            logging.info(f"Warm-up request successful. Status: {response.status_code}")
-        else:
-            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Warm-up request failed: {e}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during warm-up: {e}")
