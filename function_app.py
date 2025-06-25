@@ -16,7 +16,6 @@ from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
 from openai import AzureOpenAI
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -27,6 +26,7 @@ app = func.FunctionApp()
 # ===================================================================
 @app.schedule(schedule="0 0 * * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
+    # ★★★ 修正箇所1: メッセージに "rank" を追加 ★★★
     logging.info('Hacker News Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -48,12 +48,19 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         except Exception:
             pass
         sent_count = 0
-        for story_id in story_ids:
+        # enumerateを使って、リストのインデックスを順位(rank)として利用
+        for rank, story_id in enumerate(story_ids):
             story_detail_url = f"{HACKER_NEWS_API_BASE}/item/{story_id}.json"
             story_res = requests.get(story_detail_url, timeout=15)
             story_data = story_res.json()
             if story_data and "url" in story_data:
-                message = {"source": "HackerNews", "url": story_data["url"], "title": story_data.get("title", "No Title")}
+                # メッセージにrank情報を追加
+                message = {
+                    "source": "HackerNews", 
+                    "url": story_data["url"], 
+                    "title": story_data.get("title", "No Title"),
+                    "rank": rank 
+                }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 sent_count += 1
         logging.info(f"Successfully sent {sent_count} URLs to the queue.")
@@ -62,6 +69,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
+# (ArXivCollector, TechCrunchCollector, AINewsCollectorは変更なし)
 @app.schedule(schedule="0 5 * * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
@@ -107,12 +115,75 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
+@app.schedule(schedule="0 10 * * * *", arg_name="myTimer", run_on_startup=False)
+def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
+    logging.info('TechCrunch AI Collector function ran.')
+    try:
+        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
+        if not storage_connection_string:
+            raise ValueError("MyStorageQueueConnectionString is not set.")
+        TECHCRUNCH_URL = "https://techcrunch.com/category/artificial-intelligence/"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(TECHCRUNCH_URL, headers=headers, timeout=20, verify=False)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'lxml')
+        queue_client = QueueClient.from_connection_string(
+            conn_str=storage_connection_string,
+            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
+        )
+        sent_count = 0
+        for post in soup.select('div.wp-block-tc-post-block'):
+            title_element = post.select_one('h2.post-block__title a')
+            if title_element:
+                title = title_element.text.strip()
+                url = title_element['href']
+                message = {"source": "TechCrunch", "url": url, "title": title}
+                queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                sent_count += 1
+        logging.info(f"Successfully sent {sent_count} URLs from TechCrunch to the queue.")
+    except Exception as e:
+        logging.error(f"--- FATAL ERROR in TechCrunchCollector ---")
+        logging.error(traceback.format_exc())
+        raise
+
+@app.schedule(schedule="0 15 * * * *", arg_name="myTimer", run_on_startup=False)
+def AINewsCollector(myTimer: func.TimerRequest) -> None:
+    logging.info('AI News Collector function ran.')
+    try:
+        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
+        if not storage_connection_string:
+            raise ValueError("MyStorageQueueConnectionString is not set.")
+        AINEWS_URL = "https://artificialintelligence-news.com/"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(AINEWS_URL, headers=headers, timeout=20, verify=False)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'lxml')
+        queue_client = QueueClient.from_connection_string(
+            conn_str=storage_connection_string,
+            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
+        )
+        sent_count = 0
+        for post in soup.find_all('article'):
+            title_element = post.select_one('h3.entry-title a')
+            if title_element:
+                title = title_element.text.strip()
+                url = title_element['href']
+                message = {"source": "AI News", "url": url, "title": title}
+                queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                sent_count += 1
+        logging.info(f"Successfully sent {sent_count} URLs from AI News to the queue.")
+    except Exception as e:
+        logging.error(f"--- FATAL ERROR in AINewsCollector ---")
+        logging.error(traceback.format_exc())
+        raise
+
 # ===================================================================
 # Function 2: Article Summarizer
 # ===================================================================
 @app.queue_trigger(arg_name="msg", queue_name="urls-to-summarize",
                    connection="MyStorageQueueConnectionString")
 def ArticleSummarizer(msg: func.QueueMessage) -> None:
+    # ★★★ 修正箇所2: メッセージからrankを取得 ★★★
     logging.info(f"--- ArticleSummarizer INVOKED. MessageId: {msg.id} ---")
     
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
@@ -139,11 +210,13 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
+        # rankを取得。HackerNews以外の場合はNoneになる
+        rank = message.get("rank") 
         
         logging.info(f"Processing article: {original_title} ({url})")
         
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=15, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
         
@@ -165,7 +238,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
             logging.warning("Title translation failed. Using original title.")
 
         blob_name = _save_summary_to_blob(summary, translated_title, url)
-        _upsert_metadata_to_cosmos(item_id, url, translated_title, source, blob_name, original_title) 
+        _upsert_metadata_to_cosmos(item_id, url, translated_title, source, blob_name, original_title, rank) 
         logging.info(f" Successfully processed and summarized: {translated_title} ")
 
     except Exception as e:
@@ -179,6 +252,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 # ===================================================================
 # Helper Functions
 # ===================================================================
+# (_get_summary_and_title_from_azure_openai, _save_summary_to_blobは変更なし)
 def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str, str]:
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
@@ -190,12 +264,8 @@ def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str
         api_key=azure_openai_key,
         api_version="2024-02-01"
     )
-    
-    # ★★★ 修正箇所 ★★★
-    # 複雑な文字列を三重引用符（\"\"\"）で囲み、記述ミスを防ぐ
     system_prompt = """あなたは、技術記事を要約し、そのタイトルを日本語に翻訳する優秀なAIアシスタントです。ユーザーからの入力に対し、必ず以下のJSON形式で回答してください:
 {"translated_title": "翻訳された日本語のタイトル", "summary": "300字程度の日本語の要約"}"""
-    
     user_prompt = f"以下の記事のタイトルを日本語に翻訳し、本文を日本語で要約してください。\n\n# 元のタイトル\n{title}\n\n# 記事の本文\n{text[:8000]}"
     try:
         completion = client.chat.completions.create(
@@ -232,7 +302,8 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str, original_title: str):
+# ★★★ 修正箇所3: ヘルパー関数にrank引数を追加 ★★★
+def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str, original_title: str, rank: int = None):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -250,6 +321,10 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
         'processed_at': datetime.now(timezone.utc).isoformat(),
         'status': 'summarized'
     }
+    # rankがNoneでない場合のみ、item_bodyに追加
+    if rank is not None:
+        item_body['rank'] = rank
+        
     articles_container.upsert_item(body=item_body)
     logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}")
 
@@ -257,13 +332,13 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
 # Web UI (FastAPI)
 # ===================================================================
 fast_app = FastAPI()
-fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
+# ★★★ 修正箇所4: データ取得APIのクエリを修正 ★★★
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data():
     try:
@@ -271,24 +346,38 @@ async def get_all_articles_data():
         cosmos_key = os.environ.get('COSMOS_KEY')
         if not cosmos_endpoint or not cosmos_key:
             raise HTTPException(status_code=500, detail="Cosmos DBの接続設定が不完全です。")
+
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+
         all_items = []
-        categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG']
+        categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG', 'TechCrunch', 'AI News']
+        
         for category in categories:
-            query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
+            # HackerNewsの場合はrankで、それ以外はprocessed_atでソート
+            if category == 'HackerNews':
+                query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.rank ASC OFFSET 0 LIMIT 200"
+            else:
+                query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
+            
             items = list(articles_container.query_items(
                 query=query,
                 enable_cross_partition_query=True
             ))
             all_items.extend(items)
+        
+        # UIの「All」タブで表示する際の並び順は、処理時刻の新しい順とする
         all_items.sort(key=lambda x: x.get('processed_at', ''), reverse=True)
+
         return all_items
+
     except Exception as e:
         logging.error(f"Error fetching all articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
 
+
+# (read_root, read_single_article_page, read_articleは変更なし)
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -375,35 +464,20 @@ async def read_article(request: Request, article_id: str):
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
 
-# ===================================================================
-# Function 3: Warm-Up Trigger (コールドスタート対策)
-# ===================================================================
 @app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
 def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
-    """
-    5分ごとに自身のWeb UIエンドポイントにリクエストを送り、
-    関数アプリがスリープ状態になるのを防ぐ（コールドスタート対策）。
-    ※実際には4分ごと（*/4）に設定し、マージンを持たせています。
-    """
-    
     app_url = os.environ.get("APP_URL")
     if not app_url:
         logging.warning("APP_URL is not set. Skipping warm-up trigger.")
         return
-
-    # Web UIのフロントページにアクセスする
     warm_up_url = f"{app_url}/api/front"
-
     try:
         logging.info(f"Sending warm-up request to {warm_up_url}...")
-        # タイムアウトを短く設定し、証明書検証エラーは無視する
         response = requests.get(warm_up_url, timeout=10, verify=False)
-        
         if response.status_code == 200:
             logging.info(f"Warm-up request successful. Status: {response.status_code}")
         else:
             logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
-            
     except requests.exceptions.RequestException as e:
         logging.error(f"Warm-up request failed: {e}")
     except Exception as e:
