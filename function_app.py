@@ -372,3 +372,37 @@ async def read_article(request: Request, article_id: str):
     except Exception as e:
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
+
+# ===================================================================
+# Function 3: Warm-Up Trigger (コールドスタート対策)
+# ===================================================================
+@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
+def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
+    """
+    5分ごとに自身のWeb UIエンドポイントにリクエストを送り、
+    関数アプリがスリープ状態になるのを防ぐ（コールドスタート対策）。
+    ※実際には4分ごと（*/4）に設定し、マージンを持たせています。
+    """
+    
+    app_url = os.environ.get("APP_URL")
+    if not app_url:
+        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
+        return
+
+    # Web UIのフロントページにアクセスする
+    warm_up_url = f"{app_url}/api/front"
+
+    try:
+        logging.info(f"Sending warm-up request to {warm_up_url}...")
+        # タイムアウトを短く設定し、証明書検証エラーは無視する
+        response = requests.get(warm_up_url, timeout=10, verify=False)
+        
+        if response.status_code == 200:
+            logging.info(f"Warm-up request successful. Status: {response.status_code}")
+        else:
+            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
+            
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Warm-up request failed: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during warm-up: {e}")
