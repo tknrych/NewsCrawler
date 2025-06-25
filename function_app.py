@@ -16,6 +16,7 @@ from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
 from openai import AzureOpenAI
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -256,6 +257,7 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
 # Web UI (FastAPI)
 # ===================================================================
 fast_app = FastAPI()
+fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
