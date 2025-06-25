@@ -1,15 +1,21 @@
 <div class="article-content-wrapper">
-    {% if source %}
-    <p class="source-category">{{ source }}</p>
-    {% endif %}
+    <div class="article-header">
+        <button id="copy-link-btn" class="copy-link-button" data-article-id="{{ id }}">リンクをコピー</button>
 
-    <h1>{{ title }}</h1>
+        {% if source %}
+        <p class="source-category">{{ source }}</p>
+        {% endif %}
+    
+        <h1>{{ title }}</h1>
+    </div>
 
     {% if original_title %}
     <p class="original-title">{{ original_title }}</p>
     {% endif %}
     
     <p class="source-info"><a href="{{ source_url }}" target="_blank">{{ source_url }}</a></p>
+    
+    <button id="back-to-list-btn" class="back-button">← 記事一覧へ戻る</button>
     
     <hr style="margin-top: 20px; margin-bottom: 20px; border: 0; border-top: 1px solid #eee;">
 

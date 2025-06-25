@@ -10,7 +10,7 @@ import time
 import markdown
 import xml.etree.ElementTree as ET
 
-from azure.cosmos import CosmosClient
+from azure.cosmos import CosmosClient, exceptions
 from azure.storage.blob import BlobServiceClient
 from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 app = func.FunctionApp()
 
 # ===================================================================
-# Function 1: Hacker News Collector
+# データ収集関数群
 # ===================================================================
 @app.schedule(schedule="0 0 * * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
@@ -32,9 +32,9 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         if not storage_connection_string:
             raise ValueError("MyStorageQueueConnectionString is not set.")
         HACKER_NEWS_API_BASE = "https://hacker-news.firebaseio.com/v0"
-        TARGET_STORIES = 200 # 取得件数を200に設定
+        TARGET_STORIES = 200
         top_stories_url = f"{HACKER_NEWS_API_BASE}/topstories.json"
-        response = requests.get(top_stories_url, timeout=15)
+        response = requests.get(top_stories_url, timeout=15, verify=False)
         response.raise_for_status()
         story_ids = response.json()[:TARGET_STORIES]
         logging.info(f"Successfully fetched {len(story_ids)} story IDs.")
@@ -61,9 +61,6 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-# ===================================================================
-# Function 1.5: ArXiv AI Collector
-# ===================================================================
 @app.schedule(schedule="0 5 * * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
@@ -77,7 +74,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         )
         TARGET_CATEGORIES = ['cs.AI', 'cs.LG']
         BASE_API_URL = 'http://export.arxiv.org/api/query?'
-        max_results = 200 # 各カテゴリーから取得する論文数
+        max_results = 200
         total_sent_count = 0
         for category in TARGET_CATEGORIES:
             logging.info(f"Fetching articles for category: {category}")
@@ -116,19 +113,39 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
                    connection="MyStorageQueueConnectionString")
 def ArticleSummarizer(msg: func.QueueMessage) -> None:
     logging.info(f"--- ArticleSummarizer INVOKED. MessageId: {msg.id} ---")
+    
+    cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
+    cosmos_key = os.environ.get('COSMOS_KEY')
+    db_client = CosmosClient(cosmos_endpoint, credential=cosmos_key).get_database_client(os.environ['COSMOS_DATABASE_NAME'])
+    articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+
     try:
         message = json.loads(msg.get_body().decode('utf-8'))
         url = message.get("url")
-        original_title = message.get("title", "No Title")
-        source = message.get("source", "Unknown")
         if not url:
             logging.error("URL is missing in the queue message. Skipping.")
             return
+
+        item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
+
+        try:
+            articles_container.read_item(item=item_id, partition_key=item_id)
+            logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
+            return
+        except exceptions.CosmosResourceNotFoundError:
+            logging.info(f"New article. Proceeding with summarization. URL: {url}")
+            pass
+        
+        original_title = message.get("title", "No Title")
+        source = message.get("source", "Unknown")
+        
         logging.info(f"Processing article: {original_title} ({url})")
+        
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'lxml')
+        
         abstract_block = soup.select_one('blockquote.abstract')
         if abstract_block:
             article_text = abstract_block.text.replace('Abstract:', '').strip()
@@ -136,23 +153,27 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
             for element in soup(["script", "style", "header", "footer", "nav", "aside", "form"]):
                 element.decompose()
             article_text = ' '.join(t.strip() for t in soup.stripped_strings)
+
         if not article_text:
             raise ValueError(f"Failed to extract text from URL: {url}")
+
         translated_title, summary = _get_summary_and_title_from_azure_openai(article_text, original_title)
+        
         if not translated_title:
             translated_title = original_title
             logging.warning("Title translation failed. Using original title.")
+
         blob_name = _save_summary_to_blob(summary, translated_title, url)
-        _upsert_metadata_to_cosmos(url, translated_title, source, blob_name, original_title)
+        _upsert_metadata_to_cosmos(item_id, url, translated_title, source, blob_name, original_title) 
         logging.info(f" Successfully processed and summarized: {translated_title} ")
+
     except Exception as e:
         logging.error(f"--- FATAL ERROR in ArticleSummarizer ---")
         logging.error(f"Message Body: {msg.get_body().decode('utf-8')}")
         logging.error(traceback.format_exc())
         raise e
     finally:
-        logging.info("Waiting for 4 seconds before processing next message to respect API rate limits...")
-        time.sleep(4)
+        time.sleep(1)
 
 # ===================================================================
 # Helper Functions
@@ -168,7 +189,12 @@ def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str
         api_key=azure_openai_key,
         api_version="2024-02-01"
     )
-    system_prompt = "あなたは、技術記事を要約し、そのタイトルを日本語に翻訳する優秀なAIアシスタントです。ユーザーからの入力に対し、必ず以下のJSON形式で回答してください:\n{\"translated_title\": \"翻訳された日本語のタイトル\", \"summary\": \"300字程度の日本語の要約\"}"
+    
+    # ★★★ 修正箇所 ★★★
+    # 複雑な文字列を三重引用符（\"\"\"）で囲み、記述ミスを防ぐ
+    system_prompt = """あなたは、技術記事を要約し、そのタイトルを日本語に翻訳する優秀なAIアシスタントです。ユーザーからの入力に対し、必ず以下のJSON形式で回答してください:
+{"translated_title": "翻訳された日本語のタイトル", "summary": "300字程度の日本語の要約"}"""
+    
     user_prompt = f"以下の記事のタイトルを日本語に翻訳し、本文を日本語で要約してください。\n\n# 元のタイトル\n{title}\n\n# 記事の本文\n{text[:8000]}"
     try:
         completion = client.chat.completions.create(
@@ -205,7 +231,7 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-def _upsert_metadata_to_cosmos(url: str, title: str, source: str, blob_name: str, original_title: str):
+def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str, original_title: str):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -213,7 +239,6 @@ def _upsert_metadata_to_cosmos(url: str, title: str, source: str, blob_name: str
     cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
     db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
     articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-    item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
     item_body = {
         'id': item_id,
         'source': source,
@@ -237,7 +262,6 @@ templates = Jinja2Templates(directory="templates")
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
-# ★★★ 修正点2 ★★★
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data():
     try:
@@ -245,32 +269,23 @@ async def get_all_articles_data():
         cosmos_key = os.environ.get('COSMOS_KEY')
         if not cosmos_endpoint or not cosmos_key:
             raise HTTPException(status_code=500, detail="Cosmos DBの接続設定が不完全です。")
-
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-
         all_items = []
         categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG']
-        
         for category in categories:
-            # 各カテゴリの最新200件を取得するクエリ
             query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
             items = list(articles_container.query_items(
                 query=query,
                 enable_cross_partition_query=True
             ))
             all_items.extend(items)
-        
-        # 取得した全件を日付で再度ソートして、全体での最新順に表示されるようにする
         all_items.sort(key=lambda x: x.get('processed_at', ''), reverse=True)
-
         return all_items
-
     except Exception as e:
         logging.error(f"Error fetching all articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
-
 
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
@@ -280,6 +295,44 @@ async def read_root(request: Request):
     except Exception as e:
         logging.error(f"Error reading root HTML page: {e}\n{traceback.format_exc()}")
         return HTMLResponse("記事一覧の取得中にエラーが発生しました。", status_code=500)
+
+@fast_app.get("/article/{article_id}", response_class=HTMLResponse)
+async def read_single_article_page(request: Request, article_id: str):
+    logging.info(f"Permalink request for article ID: {article_id}")
+    try:
+        cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
+        cosmos_key = os.environ.get('COSMOS_KEY')
+        storage_conn_str = os.environ.get("MyStorageQueueConnectionString")
+        if not all([cosmos_endpoint, cosmos_key, storage_conn_str]):
+             raise HTTPException(status_code=500, detail="接続設定が不完全です。")
+        cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
+        db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
+        articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+        query = f"SELECT * FROM c WHERE c.id = '{article_id}'"
+        items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
+        if not items:
+            raise HTTPException(status_code=404, detail="指定された記事が見つかりません。")
+        article_meta = items[0]
+        blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
+        blob_client = blob_service_client.get_blob_client(
+            container=os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries"),
+            blob=article_meta['summary_blob_path']
+        )
+        if not blob_client.exists():
+            raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
+        markdown_content = blob_client.download_blob().readall().decode('utf-8')
+        html_content = markdown.markdown(markdown_content)
+        return templates.TemplateResponse("permalink.html", {
+            "request": request,
+            "title": article_meta.get('title', 'No Title'),
+            "content": html_content,
+            "source_url": article_meta.get('url', '#'),
+            "original_title": article_meta.get('original_title', ''),
+            "source": article_meta.get('source', 'Unknown')
+        })
+    except Exception as e:
+        logging.error(f"Error reading permalink article {article_id}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
 
 @fast_app.get("/api/article/{article_id}", response_class=HTMLResponse)
 async def read_article(request: Request, article_id: str):
@@ -309,6 +362,7 @@ async def read_article(request: Request, article_id: str):
         html_content = markdown.markdown(markdown_content)
         return templates.TemplateResponse("article.html", {
             "request": request,
+            "id": article_id,
             "title": article_meta.get('title', 'No Title'),
             "content": html_content,
             "source_url": article_meta.get('url', '#'),

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background-color: #fff;
+            padding: 20px 40px;
+            margin-top: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #007bff;
+            font-size: 2em;
+            margin-bottom: 5px;
+        }
+        .original-title {
+            color: #555;
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            font-style: italic;
+        }
+        .source-category {
+            font-size: 0.9em;
+            font-weight: bold;
+            color: #007bff;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+        .source-info {
+            color: #777;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 10px;
+            word-break: break-all;
+        }
+        .content-body {
+            line-height: 1.8;
+            font-size: 1em;
+            color: #444;
+        }
+         @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+                margin-top: 0;
+            }
+             h1 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        {% if source %}
+        <p class="source-category">{{ source }}</p>
+        {% endif %}
+
+        <h1>{{ title }}</h1>
+
+        {% if original_title %}
+        <p class="original-title">{{ original_title }}</p>
+        {% endif %}
+        
+        <p class="source-info"><a href="{{ source_url }}" target="_blank" rel="noopener noreferrer">{{ source_url }}</a></p>
+        
+        <hr style="margin-top: 20px; margin-bottom: 20px; border: 0; border-top: 1px solid #eee;">
+
+        <div class="content-body">
+            {{ content | safe }}
+        </div>
+    </div>
+</body>
+</html>

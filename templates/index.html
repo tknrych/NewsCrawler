@@ -124,6 +124,29 @@
         .article-detail-container {
             padding: 20px 40px;
         }
+        
+        .article-header {
+            position: relative;
+            padding-top: 10px;
+        }
+
+        .copy-link-button {
+            position: absolute;
+            top: 0;
+            right: 0;
+            background-color: #6c757d;
+            color: white;
+            border: 1px solid #6c757d;
+            padding: 5px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8em;
+            transition: background-color 0.2s;
+        }
+
+        .copy-link-button:hover {
+            background-color: #5a6268;
+        }
 
         .article-detail-container h1 {
             color: #007bff;
@@ -159,12 +182,62 @@
             font-size: 1em;
             color: #444;
         }
+        
+        .back-button {
+            display: none;
+            margin-bottom: 20px;
+            padding: 10px 15px;
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        .back-button:hover {
+            background-color: #5a6268;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                height: 100vh;
+                box-sizing: border-box;
+                border-right: none;
+            }
+
+            .main-content {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100vh;
+                box-sizing: border-box;
+                display: none; 
+            }
+
+            .article-detail-container, .tab-nav {
+                padding: 15px;
+            }
+
+            .article-detail-container h1 {
+                font-size: 1.5em;
+            }
+            
+            .back-button {
+                display: block; 
+            }
+        }
     </style>
 </head>
 <body>
     <div class="dashboard-container">
         <div class="sidebar">
-            <h2>最新記事一覧（200件）</h2>
+            <h2>最新記事一覧</h2>
             <ul class="article-list" id="article-list">
                 </ul>
         </div>
@@ -183,6 +256,8 @@
     </div>
 
     <script>
+        const sidebar = document.querySelector('.sidebar');
+        const mainContent = document.querySelector('.main-content');
         const articleList = document.getElementById('article-list');
         const articleDetail = document.getElementById('article-detail');
         const tabButtons = document.querySelectorAll('.tab-button');
@@ -223,10 +298,12 @@
                 li.setAttribute('data-id', article.id);
                 li.setAttribute('data-source', article.source);
                 
-                // aタグでの画面遷移を止め、handleArticleClickを呼び出す
                 const link = document.createElement('a');
-                link.href = '#';
+                link.href = `/article/${article.id}`;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
                 link.innerHTML = `<strong>${article.title || 'No Title'}</strong>`;
+                
                 link.onclick = (event) => {
                     event.preventDefault();
                     handleArticleClick(article.id);
@@ -247,15 +324,49 @@
         async function handleArticleClick(articleId) {
             try {
                 articleDetail.innerHTML = '<p>読み込み中...</p>';
+                if (window.innerWidth <= 768) {
+                    sidebar.style.display = 'none';
+                    mainContent.style.display = 'block';
+                }
+
                 const response = await fetch(`/api/article/${articleId}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 const htmlContent = await response.text();
-
-                // APIから返されたHTMLスニペットを直接表示
                 articleDetail.innerHTML = htmlContent;
 
+                const copyButton = document.getElementById('copy-link-btn');
+                if (copyButton) {
+                    copyButton.onclick = () => {
+                        const articleIdForCopy = copyButton.dataset.articleId;
+                        const permalink = `${window.location.origin}/article/${articleIdForCopy}`;
+                        
+                        navigator.clipboard.writeText(permalink).then(() => {
+                            const originalText = copyButton.textContent;
+                            copyButton.textContent = 'コピーしました！';
+                            copyButton.style.backgroundColor = '#28a745';
+                            
+                            setTimeout(() => {
+                                copyButton.textContent = originalText;
+                                copyButton.style.backgroundColor = '#6c757d';
+                            }, 2000);
+                        }).catch(err => {
+                            console.error('リンクのコピーに失敗しました: ', err);
+                            alert('リンクのコピーに失敗しました。');
+                        });
+                    };
+                }
+                
+                const backButton = document.getElementById('back-to-list-btn');
+                if (backButton) {
+                    backButton.onclick = () => {
+                        if (window.innerWidth <= 768) {
+                            mainContent.style.display = 'none';
+                            sidebar.style.display = 'block';
+                        }
+                    };
+                }
             } catch (error) {
                 console.error('Error fetching article details:', error);
                 articleDetail.innerHTML = `<p>記事の詳細を読み込み中にエラーが発生しました。</p>`;
@@ -267,6 +378,11 @@
                 tabButtons.forEach(btn => btn.classList.remove('active'));
                 button.classList.add('active');
                 const source = button.dataset.source;
+                
+                if (window.innerWidth <= 768) {
+                    mainContent.style.display = 'none';
+                    sidebar.style.display = 'block';
+                }
                 displayArticles(source);
             });
         });
