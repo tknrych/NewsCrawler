@@ -34,7 +34,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         if not storage_connection_string:
             raise ValueError("MyStorageQueueConnectionString is not set.")
         HACKER_NEWS_API_BASE = "https://hacker-news.firebaseio.com/v0"
-        TARGET_STORIES = 200
+        TARGET_STORIES = 100
         top_stories_url = f"{HACKER_NEWS_API_BASE}/topstories.json"
         response = requests.get(top_stories_url, timeout=15, verify=False)
         response.raise_for_status()
