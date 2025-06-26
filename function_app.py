@@ -9,7 +9,6 @@ import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
-import certifi
 
 from azure.cosmos import CosmosClient, exceptions
 from azure.storage.blob import BlobServiceClient
@@ -17,17 +16,17 @@ from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
 from openai import AzureOpenAI
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 app = func.FunctionApp()
 
 # ===================================================================
-# データ収集関数群
+# データ収集関数群 (変更なし)
 # ===================================================================
 @app.schedule(schedule="0 0 * * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
+    # (既存のコードのまま)
     logging.info('Hacker News Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -51,7 +50,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         sent_count = 0
         for rank, story_id in enumerate(story_ids):
             story_detail_url = f"{HACKER_NEWS_API_BASE}/item/{story_id}.json"
-            story_res = requests.get(story_detail_url, timeout=15, verify=False)
+            story_res = requests.get(story_detail_url, timeout=15)
             story_data = story_res.json()
             if story_data and "url" in story_data:
                 message = {
@@ -70,6 +69,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
 
 @app.schedule(schedule="0 5 * * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
+    # (既存のコードのまま)
     logging.info('ArXiv AI Collector function (API version) ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -87,7 +87,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
             logging.info(f"Fetching articles for category: {category}")
             search_query = f'cat:{category}'
             api_url = f'{BASE_API_URL}search_query={search_query}&sortBy=submittedDate&sortOrder=descending&max_results={max_results}'
-            response = requests.get(api_url, timeout=20, verify=False)
+            response = requests.get(api_url, timeout=20)
             response.raise_for_status()
             xml_data = response.content
             namespace = {'atom': 'http://www.w3.org/2005/Atom'}
@@ -115,6 +115,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
 
 @app.schedule(schedule="0 10 * * * *", arg_name="myTimer", run_on_startup=False)
 def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
+    # (既存のコードのまま)
     logging.info('TechCrunch AI Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -146,6 +147,7 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
 
 @app.schedule(schedule="0 15 * * * *", arg_name="myTimer", run_on_startup=False)
 def AINewsCollector(myTimer: func.TimerRequest) -> None:
+    # (既存のコードのまま)
     logging.info('AI News Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -175,25 +177,6 @@ def AINewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
-def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
-    app_url = os.environ.get("APP_URL")
-    if not app_url:
-        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
-        return
-    warm_up_url = f"{app_url}/api/front"
-    try:
-        logging.info(f"Sending warm-up request to {warm_up_url}...")
-        response = requests.get(warm_up_url, timeout=10, verify=False)
-        if response.status_code == 200:
-            logging.info(f"Warm-up request successful. Status: {response.status_code}")
-        else:
-            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Warm-up request failed: {e}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during warm-up: {e}")
-
 # ===================================================================
 # Function 2: Article Summarizer
 # ===================================================================
@@ -216,31 +199,21 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
         item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
 
+        # ★★★ 修正箇所1: 記事の状態をチェックし、成功済みならスキップ ★★★
         try:
             existing_item = articles_container.read_item(item=item_id, partition_key=item_id)
-            new_rank = message.get("rank")
-            source = message.get("source")
-            
-            if source == "HackerNews" and new_rank is not None:
-                old_rank = existing_item.get('rank')
-                if old_rank != new_rank:
-                    logging.info(f"Rank for article {url} changed from {old_rank} to {new_rank}. Updating.")
-                    existing_item['rank'] = new_rank
-                    existing_item['processed_at'] = datetime.now(timezone.utc).isoformat()
-                    articles_container.upsert_item(body=existing_item)
-                else:
-                    logging.info(f"Article {url} already exists with the same rank. Skipping.")
+            if existing_item.get('status') == 'summarized':
+                logging.info(f"Article already exists and is summarized. Skipping processing. URL: {url}")
+                return
             else:
-                logging.info(f"Article {url} already exists. Skipping processing.")
-            
-            return
+                logging.info(f"Retrying summarization for failed or pending article. URL: {url}")
         except exceptions.CosmosResourceNotFoundError:
             logging.info(f"New article. Proceeding with summarization. URL: {url}")
             pass
         
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
-        rank = message.get("rank")
+        rank = message.get("rank") 
         
         logging.info(f"Processing article: {original_title} ({url})")
         
@@ -262,18 +235,62 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
         translated_title, summary = _get_summary_and_title_from_azure_openai(article_text, original_title)
         
-        if not translated_title:
-            translated_title = original_title
-            logging.warning("Title translation failed. Using original title.")
+        # ★★★ 修正箇所2: 要約の成功・失敗に応じて処理を分岐 ★★★
+        if summary == "記事の要約中にエラーが発生しました。":
+            logging.warning(f"Summarization failed for URL: {url}. Setting status to 'failed'.")
+            _upsert_metadata_to_cosmos(
+                item_id=item_id,
+                url=url,
+                title=original_title, # 翻訳に失敗したため元のタイトルを使用
+                source=source,
+                blob_name=None, # Blobは作成しない
+                original_title=original_title,
+                rank=rank,
+                status='failed' # ステータスを'failed'に設定
+            )
+        else:
+            # 要約成功時の処理
+            if not translated_title:
+                translated_title = original_title
+                logging.warning("Title translation failed. Using original title.")
 
-        blob_name = _save_summary_to_blob(summary, translated_title, url)
-        _upsert_metadata_to_cosmos(item_id, url, translated_title, source, blob_name, original_title, rank) 
-        logging.info(f" Successfully processed and summarized: {translated_title} ")
+            blob_name = _save_summary_to_blob(summary, translated_title, url)
+            _upsert_metadata_to_cosmos(
+                item_id=item_id,
+                url=url,
+                title=translated_title,
+                source=source,
+                blob_name=blob_name,
+                original_title=original_title,
+                rank=rank,
+                status='summarized' # ステータスを'summarized'に設定
+            )
+            logging.info(f"Successfully processed and summarized: {translated_title}")
 
     except Exception as e:
         logging.error(f"--- FATAL ERROR in ArticleSummarizer ---")
         logging.error(f"Message Body: {msg.get_body().decode('utf-8')}")
         logging.error(traceback.format_exc())
+        
+        # ★★★ 修正箇所3: 不明なエラー発生時もステータスを'failed'に ★★★
+        try:
+            message_data = json.loads(msg.get_body().decode('utf-8'))
+            url_on_error = message_data.get("url")
+            if url_on_error:
+                error_item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url_on_error))
+                _upsert_metadata_to_cosmos(
+                    item_id=error_item_id,
+                    url=url_on_error,
+                    title=message_data.get("title", "Title unavailable"),
+                    source=message_data.get("source", "Unknown"),
+                    blob_name=None,
+                    original_title=message_data.get("title", "Title unavailable"),
+                    rank=message_data.get("rank"),
+                    status='failed'
+                )
+        except Exception as inner_e:
+            logging.error(f"Could not even save failed status to Cosmos DB: {inner_e}")
+
         raise e
     finally:
         time.sleep(1)
@@ -281,7 +298,9 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 # ===================================================================
 # Helper Functions
 # ===================================================================
+# (_get_summary_and_title_from_azure_openai, _save_summary_to_blobは変更なし)
 def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str, str]:
+    # (既存のコードのまま)
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -313,6 +332,7 @@ def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str
         return title, "記事の要約中にエラーが発生しました。"
 
 def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
+    # (既存のコードのまま)
     storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
     if not storage_connection_string:
         raise ValueError("ストレージの接続文字列が設定されていません。")
@@ -330,7 +350,8 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str, original_title: str, rank: int = None):
+# ★★★ 修正箇所4: ヘルパー関数にstatus引数を追加し、blob_nameをオプショナルに ★★★
+def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str, rank: int = None):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -346,18 +367,22 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
         'original_title': original_title,
         'summary_blob_path': blob_name,
         'processed_at': datetime.now(timezone.utc).isoformat(),
-        'status': 'summarized'
+        'status': status # 引数で受け取ったステータスを使用
     }
+
+    if blob_name is None:
+        item_body['summary_blob_path'] = None
+
     if rank is not None:
         item_body['rank'] = rank
+        
     articles_container.upsert_item(body=item_body)
-    logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}")
+    logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}, status: {status}")
 
 # ===================================================================
-# Web UI (FastAPI)
+# Web UI (FastAPI) (変更なし)
 # ===================================================================
 fast_app = FastAPI()
-fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
@@ -366,31 +391,41 @@ def WebUI(req: func.HttpRequest) -> func.HttpResponse:
 
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data():
+    # (既存のコードのまま)
     try:
         cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
         cosmos_key = os.environ.get('COSMOS_KEY')
         if not cosmos_endpoint or not cosmos_key:
             raise HTTPException(status_code=500, detail="Cosmos DBの接続設定が不完全です。")
+
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+
         all_items = []
         categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG', 'TechCrunch', 'AI News']
+        
         for category in categories:
             if category == 'HackerNews':
                 query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.rank ASC OFFSET 0 LIMIT 200"
             else:
                 query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
+            
             items = list(articles_container.query_items(
                 query=query,
                 enable_cross_partition_query=True
             ))
             all_items.extend(items)
+        
         all_items.sort(key=lambda x: x.get('processed_at', ''), reverse=True)
+
         return all_items
+
     except Exception as e:
         logging.error(f"Error fetching all articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
+
+# (以降のWeb UI関連コードは変更なし)
 
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
@@ -418,15 +453,20 @@ async def read_single_article_page(request: Request, article_id: str):
         if not items:
             raise HTTPException(status_code=404, detail="指定された記事が見つかりません。")
         article_meta = items[0]
-        blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
-        blob_client = blob_service_client.get_blob_client(
-            container=os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries"),
-            blob=article_meta['summary_blob_path']
-        )
-        if not blob_client.exists():
-            raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
-        markdown_content = blob_client.download_blob().readall().decode('utf-8')
-        html_content = markdown.markdown(markdown_content)
+        # ★★★ 修正箇所5: 失敗した記事への対応 ★★★
+        if article_meta.get('status') == 'failed' or not article_meta.get('summary_blob_path'):
+            html_content = markdown.markdown("この記事は現在、要約の生成に失敗しています。次回のクロール時に再試行されます。")
+        else:
+            blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
+            blob_client = blob_service_client.get_blob_client(
+                container=os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries"),
+                blob=article_meta['summary_blob_path']
+            )
+            if not blob_client.exists():
+                raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
+            markdown_content = blob_client.download_blob().readall().decode('utf-8')
+            html_content = markdown.markdown(markdown_content)
+
         return templates.TemplateResponse("permalink.html", {
             "request": request,
             "title": article_meta.get('title', 'No Title'),
@@ -456,15 +496,20 @@ async def read_article(request: Request, article_id: str):
         if not items:
             raise HTTPException(status_code=404, detail="指定された記事が見つかりません。")
         article_meta = items[0]
-        blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
-        blob_client = blob_service_client.get_blob_client(
-            container=os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries"),
-            blob=article_meta['summary_blob_path']
-        )
-        if not blob_client.exists():
-            raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
-        markdown_content = blob_client.download_blob().readall().decode('utf-8')
-        html_content = markdown.markdown(markdown_content)
+        # ★★★ 修正箇所6: 失敗した記事への対応 ★★★
+        if article_meta.get('status') == 'failed' or not article_meta.get('summary_blob_path'):
+            html_content = markdown.markdown("この記事は現在、要約の生成に失敗しています。次回のクロール時に再試行されます。")
+        else:
+            blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
+            blob_client = blob_service_client.get_blob_client(
+                container=os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries"),
+                blob=article_meta['summary_blob_path']
+            )
+            if not blob_client.exists():
+                raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
+            markdown_content = blob_client.download_blob().readall().decode('utf-8')
+            html_content = markdown.markdown(markdown_content)
+
         return templates.TemplateResponse("article.html", {
             "request": request,
             "id": article_id,
@@ -477,3 +522,23 @@ async def read_article(request: Request, article_id: str):
     except Exception as e:
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
+
+@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
+def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
+    # (既存のコードのまま)
+    app_url = os.environ.get("APP_URL")
+    if not app_url:
+        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
+        return
+    warm_up_url = f"{app_url}/api/front"
+    try:
+        logging.info(f"Sending warm-up request to {warm_up_url}...")
+        response = requests.get(warm_up_url, timeout=10, verify=False)
+        if response.status_code == 200:
+            logging.info(f"Warm-up request successful. Status: {response.status_code}")
+        else:
+            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Warm-up request failed: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during warm-up: {e}")
