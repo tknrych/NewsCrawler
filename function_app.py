@@ -116,67 +116,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-@app.schedule(schedule="0 10 * * * *", arg_name="myTimer", run_on_startup=False)
-def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
-    logging.info('TechCrunch AI Collector function ran.')
-    try:
-        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
-        if not storage_connection_string:
-            raise ValueError("MyStorageQueueConnectionString is not set.")
-        TECHCRUNCH_URL = "https://techcrunch.com/category/artificial-intelligence/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(TECHCRUNCH_URL, headers=headers, timeout=20, verify=False)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'lxml')
-        queue_client = QueueClient.from_connection_string(
-            conn_str=storage_connection_string,
-            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
-        )
-        sent_count = 0
-        for post in soup.select('div.wp-block-tc-post-block'):
-            title_element = post.select_one('h2.post-block__title a')
-            if title_element:
-                title = title_element.text.strip()
-                url = title_element['href']
-                message = {"source": "TechCrunch", "url": url, "title": title}
-                queue_client.send_message(json.dumps(message, ensure_ascii=False))
-                sent_count += 1
-        logging.info(f"Successfully sent {sent_count} URLs from TechCrunch to the queue.")
-    except Exception as e:
-        logging.error(f"--- FATAL ERROR in TechCrunchCollector ---")
-        logging.error(traceback.format_exc())
-        raise
-
-@app.schedule(schedule="0 15 * * * *", arg_name="myTimer", run_on_startup=False)
-def AINewsCollector(myTimer: func.TimerRequest) -> None:
-    logging.info('AI News Collector function ran.')
-    try:
-        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
-        if not storage_connection_string:
-            raise ValueError("MyStorageQueueConnectionString is not set.")
-        AINEWS_URL = "https://artificialintelligence-news.com/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(AINEWS_URL, headers=headers, timeout=20, verify=False)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'lxml')
-        queue_client = QueueClient.from_connection_string(
-            conn_str=storage_connection_string,
-            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
-        )
-        sent_count = 0
-        for post in soup.find_all('article'):
-            title_element = post.select_one('h3.entry-title a')
-            if title_element:
-                title = title_element.text.strip()
-                url = title_element['href']
-                message = {"source": "AI News", "url": url, "title": title}
-                queue_client.send_message(json.dumps(message, ensure_ascii=False))
-                sent_count += 1
-        logging.info(f"Successfully sent {sent_count} URLs from AI News to the queue.")
-    except Exception as e:
-        logging.error(f"--- FATAL ERROR in AINewsCollector ---")
-        logging.error(traceback.format_exc())
-        raise
+# TechCrunchCollectorとAINewsCollectorは不要なため削除
 
 # ===================================================================
 # Function 2: Article Summarizer
@@ -209,7 +149,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
         try:
             existing_item = articles_container.read_item(item=item_id, partition_key=item_id)
-            if existing_item.get('status') == 'summarized' or existing_item.get('status') == 'title_only':
+            if existing_item.get('status') in ['summarized', 'title_only']:
                 logging.info(f"Article already processed ({existing_item.get('status')}). Skipping. URL: {url}")
                 return
             else:
@@ -272,9 +212,6 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 # Helper Functions
 # ===================================================================
 def _get_title_translation_from_azure_openai(title: str) -> str:
-    """
-    与えられたタイトルのみを日本語に翻訳する。
-    """
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -405,7 +342,7 @@ async def get_all_articles_data():
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
         all_items = []
-        categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG', 'TechCrunch', 'AI News']
+        categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG']
         
         for category in categories:
             if category == 'HackerNews':
