@@ -22,7 +22,8 @@
     "queues": {
       "messageEncoding": "none",
       "newBatchThreshold": 2,
-      "maxPollingInterval": "00:00:10"
+      "maxPollingInterval": "00:00:10",
+      "batchSize": 5 
     }
   }
 }
