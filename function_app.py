@@ -25,7 +25,7 @@ app = func.FunctionApp()
 # ===================================================================
 # データ収集関数群
 # ===================================================================
-@app.schedule(schedule="0 */15 * * * *", arg_name="myTimer", run_on_startup=False)
+@app.schedule(schedule="0 */3 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
     logging.info('Hacker News Collector function ran.')
     try:
@@ -33,7 +33,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         if not storage_connection_string:
             raise ValueError("MyStorageQueueConnectionString is not set.")
         HACKER_NEWS_API_BASE = "https://hacker-news.firebaseio.com/v0"
-        TARGET_STORIES = 100
+        TARGET_STORIES = 50
         top_stories_url = f"{HACKER_NEWS_API_BASE}/topstories.json"
         response = requests.get(top_stories_url, timeout=15, verify=False)
         response.raise_for_status()
@@ -71,7 +71,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-@app.schedule(schedule="0 5 * * * *", arg_name="myTimer", run_on_startup=False)
+@app.schedule(schedule="5 */3 * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
     try:
@@ -84,7 +84,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         )
         TARGET_CATEGORIES = ['cs.AI', 'cs.LG']
         BASE_API_URL = 'http://export.arxiv.org/api/query?'
-        max_results = 100
+        max_results = 50
         total_sent_count = 0
         for category in TARGET_CATEGORIES:
             logging.info(f"Fetching articles for category: {category}")
@@ -148,13 +148,13 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         rank = message.get("rank")
 
         try:
-            existing_item = articles_container.read_item(item=item_id, partition_key=item_id)
-            if existing_item.get('status') in ['summarized', 'title_only']:
-                logging.info(f"Article already processed ({existing_item.get('status')}). Skipping. URL: {url}")
-                return
-            else:
-                logging.info(f"Retrying processing for failed article. URL: {url}")
+            # DBにアイテムが存在するかを確認
+            articles_container.read_item(item=item_id, partition_key=item_id)
+            # アイテムが存在した場合、ステータスに関わらず処理をスキップする
+            logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
+            return
         except exceptions.CosmosResourceNotFoundError:
+            # DBにアイテムが存在しない（新しい記事の）場合のみ、処理を続行
             logging.info(f"New article. Proceeding with processing. URL: {url}")
             pass
         
@@ -259,7 +259,7 @@ def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str
     )
     system_prompt = """あなたは、技術記事を要約し、そのタイトルを日本語に翻訳する優秀なAIアシスタントです。ユーザーからの入力に対し、必ず以下のJSON形式で回答してください:
 {"translated_title": "翻訳された日本語のタイトル", "summary": "300字程度の日本語の要約"}"""
-    user_prompt = f"以下の記事のタイトルを日本語に翻訳し、本文を日本語で要約してください。\n\n# 元のタイトル\n{title}\n\n# 記事の本文\n{text[:8000]}"
+    user_prompt = f"以下の記事のタイトルを日本語に翻訳し、本文を日本語で要約してください。\n\n# 元のタイトル\n{title}\n\n# 記事の本文\n{text[:4000]}"
     try:
         completion = client.chat.completions.create(
             model=azure_openai_deployment,
@@ -455,22 +455,3 @@ async def read_article(request: Request, article_id: str):
     except Exception as e:
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
-
-@app.schedule(schedule="0 */4 * * * *", arg_name="myTimer", run_on_startup=False)
-def WarmUpTrigger(myTimer: func.TimerRequest) -> None:
-    app_url = os.environ.get("APP_URL")
-    if not app_url:
-        logging.warning("APP_URL is not set. Skipping warm-up trigger.")
-        return
-    warm_up_url = f"{app_url}/api/front"
-    try:
-        logging.info(f"Sending warm-up request to {warm_up_url}...")
-        response = requests.get(warm_up_url, timeout=10, verify=False)
-        if response.status_code == 200:
-            logging.info(f"Warm-up request successful. Status: {response.status_code}")
-        else:
-            logging.warning(f"Warm-up request returned non-200 status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Warm-up request failed: {e}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during warm-up: {e}")
