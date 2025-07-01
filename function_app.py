@@ -25,7 +25,7 @@ app = func.FunctionApp()
 # ===================================================================
 # データ収集関数群
 # ===================================================================
-@app.schedule(schedule="0 */3 * * *", arg_name="myTimer", run_on_startup=False)
+@app.schedule(schedule="0 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
     logging.info('Hacker News Collector function ran.')
     try:
@@ -33,7 +33,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         if not storage_connection_string:
             raise ValueError("MyStorageQueueConnectionString is not set.")
         HACKER_NEWS_API_BASE = "https://hacker-news.firebaseio.com/v0"
-        TARGET_STORIES = 50
+        TARGET_STORIES = 100
         top_stories_url = f"{HACKER_NEWS_API_BASE}/topstories.json"
         response = requests.get(top_stories_url, timeout=15, verify=False)
         response.raise_for_status()
@@ -71,7 +71,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-@app.schedule(schedule="5 */3 * * *", arg_name="myTimer", run_on_startup=False)
+@app.schedule(schedule="5 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
     try:
@@ -84,7 +84,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         )
         TARGET_CATEGORIES = ['cs.AI', 'cs.LG']
         BASE_API_URL = 'http://export.arxiv.org/api/query?'
-        max_results = 50
+        max_results = 100
         total_sent_count = 0
         for category in TARGET_CATEGORIES:
             logging.info(f"Fetching articles for category: {category}")
@@ -115,8 +115,6 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         logging.error(f"--- FATAL ERROR in ArXivCollector ---")
         logging.error(traceback.format_exc())
         raise
-
-# TechCrunchCollectorとAINewsCollectorは不要なため削除
 
 # ===================================================================
 # Function 2: Article Summarizer
