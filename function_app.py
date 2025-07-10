@@ -9,6 +9,9 @@ import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
+from fastapi.responses import Response
+from email.utils import formatdate
+from urllib.parse import urljoin
 
 from azure.cosmos import CosmosClient, exceptions
 from azure.core.exceptions import ResourceExistsError
@@ -453,3 +456,89 @@ async def read_article(request: Request, article_id: str):
     except Exception as e:
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
+
+@fast_app.get("/api/rss", response_class=Response)
+async def generate_rss_feed(request: Request):
+    """
+    Cosmos DBから最新の記事を取得し、RSS 2.0フィードを生成するエンドポイント。
+    """
+    logging.info("RSS feed request received.")
+    try:
+        # 必要な環境変数の取得とチェック
+        cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
+        cosmos_key = os.environ.get('COSMOS_KEY')
+        storage_conn_str = os.environ.get("MyStorageQueueConnectionString")
+        if not all([cosmos_endpoint, cosmos_key, storage_conn_str]):
+            raise HTTPException(status_code=500, detail="RSS生成に必要な接続設定が不完全です。")
+
+        # CosmosDBから最新50件の要約済み記事を取得
+        cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
+        db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
+        articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 50"
+        items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
+
+        # Blob Storageクライアントの準備
+        blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
+        summary_container_name = os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries")
+
+        # RSSフィードのルート要素を構築
+        rss = ET.Element("rss", version="2.0", attrib={"xmlns:atom": "http://www.w3.org/2005/Atom"})
+        channel = ET.SubElement(rss, "channel")
+
+        # チャンネルの基本情報
+        site_title = "Tech News Summarizer"
+        base_url = str(request.base_url)
+        site_link = urljoin(base_url, "api/front")
+        
+        ET.SubElement(channel, "title").text = site_title
+        ET.SubElement(channel, "link").text = site_link
+        ET.SubElement(channel, "description").text = "Hacker NewsやarXivなどの最新技術記事の要約"
+        ET.SubElement(channel, "language").text = "ja"
+        ET.SubElement(channel, "lastBuildDate").text = formatdate(datetime.now(timezone.utc).timestamp(), usegmt=True)
+        ET.SubElement(channel, "atom:link", href=urljoin(base_url, "api/rss"), rel="self", type="application/rss+xml")
+
+        # 各記事を<item>要素として追加
+        for item in items:
+            item_elem = ET.SubElement(channel, "item")
+            
+            ET.SubElement(item_elem, "title").text = item.get('title', 'No Title')
+            
+            # 各記事へのパーマリンク
+            article_link = urljoin(base_url, f"article/{item['id']}")
+            ET.SubElement(item_elem, "link").text = article_link
+            
+            # 一意なID
+            ET.SubElement(item_elem, "guid", isPermaLink="false").text = item['id']
+            
+            # 公開日
+            pub_date_str = item.get('processed_at')
+            if pub_date_str:
+                dt_object = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
+                ET.SubElement(item_elem, "pubDate").text = formatdate(dt_object.timestamp(), usegmt=True)
+
+            # 説明（要約をBlobから取得）
+            description = "要約を読み込めませんでした。"
+            blob_path = item.get('summary_blob_path')
+            if blob_path:
+                try:
+                    blob_client = blob_service_client.get_blob_client(container=summary_container_name, blob=blob_path)
+                    if blob_client.exists():
+                        # RSSのdescriptionにはプレーンテキストの要約をそのまま使用
+                        description = blob_client.download_blob().readall().decode('utf-8')
+                    else:
+                        logging.warning(f"Summary blob not found for RSS: {blob_path}")
+                        description = "要約ファイルが見つかりませんでした。"
+                except Exception as e:
+                    logging.error(f"RSS Feed Gen: Failed to read summary blob {blob_path}: {e}")
+                    description = "要約の読み込み中にエラーが発生しました。"
+            
+            ET.SubElement(item_elem, "description").text = description
+
+        # XMLを文字列に変換してレスポンスとして返す
+        rss_string = ET.tostring(rss, encoding='UTF-8', method='xml', xml_declaration=True).decode('utf-8')
+        return Response(content=rss_string, media_type="application/rss+xml; charset=utf-8")
+
+    except Exception as e:
+        logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
