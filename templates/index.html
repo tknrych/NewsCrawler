@@ -245,7 +245,11 @@
                 <button class="tab-button" data-source="arXiv cs.LG">arXiv cs.LG</button>
             </div>
             <ul class="article-list" id="article-list">
-                </ul>
+            </ul>
+            <div id="loading" style="text-align: center; padding: 10px; display: none;">読み込み中...</div>
+            <div id="load-more-container" style="text-align: center; padding-top: 15px;">
+                <button id="load-more-btn" class="back-button" style="display: none; margin: 0 auto; background-color: #007bff;">さらに読み込む</button>
+            </div>
         </div>
         <div class="main-content">
             <div id="article-detail" class="article-detail-container">
@@ -260,39 +264,76 @@
         const articleList = document.getElementById('article-list');
         const articleDetail = document.getElementById('article-detail');
         const tabButtons = document.querySelectorAll('.tab-button');
-        let allArticlesData = [];
+        const loadingIndicator = document.getElementById('loading');
+        const loadMoreBtn = document.getElementById('load-more-btn');
+        
+        let isLoading = false;
+        let allArticlesLoaded = false;
+        let currentPage = 0;
+        const articlesPerPage = 50;
+        let currentFilterSource = 'All';
 
         document.addEventListener('DOMContentLoaded', () => {
-            fetchArticlesData();
+            resetAndLoadArticles();
+
+            loadMoreBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                loadArticles();
+            });
         });
 
-        async function fetchArticlesData() {
+        function resetAndLoadArticles() {
+            currentPage = 0;
+            allArticlesLoaded = false;
+            articleList.innerHTML = '';
+            loadMoreBtn.style.display = 'none';
+            loadArticles();
+        }
+
+        async function loadArticles() {
+            if (isLoading || allArticlesLoaded) return;
+
+            isLoading = true;
+            loadingIndicator.style.display = 'block';
+            loadMoreBtn.style.display = 'none';
+
+            const skipCount = currentPage * articlesPerPage;
+            const sourceParam = encodeURIComponent(currentFilterSource);
+
             try {
-                const response = await fetch('/api/articles_data');
+                const response = await fetch(`/api/articles_data?source=${sourceParam}&skip=${skipCount}&limit=${articlesPerPage}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                const data = await response.json();
-                allArticlesData = data;
-                displayArticles('All');
+                const newArticles = await response.json();
+                
+                if (newArticles.length > 0) {
+                    appendArticles(newArticles);
+                    currentPage++;
+                }
+
+                if (newArticles.length < articlesPerPage) {
+                    allArticlesLoaded = true;
+                    loadMoreBtn.style.display = 'none';
+                } else {
+                    loadMoreBtn.style.display = 'inline-block';
+                }
+
+                if (currentPage === 1 && newArticles.length === 0) {
+                    articleList.innerHTML = '<li>該当する記事はありません。</li>';
+                }
+
             } catch (error) {
                 console.error('Error fetching articles:', error);
-                articleList.innerHTML = '<li>記事の読み込みに失敗しました。</li>';
+                articleList.innerHTML += '<li>記事の読み込みに失敗しました。</li>';
+            } finally {
+                isLoading = false;
+                loadingIndicator.style.display = 'none';
             }
         }
 
-        function displayArticles(filterSource = 'All') {
-            articleList.innerHTML = '';
-            const filteredArticles = (filterSource === 'All')
-                ? allArticlesData
-                : allArticlesData.filter(article => article.source === filterSource);
-
-            if (filteredArticles.length === 0) {
-                articleList.innerHTML = '<li>該当する記事はありません。</li>';
-                return;
-            }
-
-            filteredArticles.forEach(article => {
+        function appendArticles(articles) {
+            articles.forEach(article => {
                 const li = document.createElement('li');
                 li.setAttribute('data-id', article.id);
                 li.setAttribute('data-source', article.source);
@@ -376,13 +417,15 @@
             button.addEventListener('click', () => {
                 tabButtons.forEach(btn => btn.classList.remove('active'));
                 button.classList.add('active');
-                const source = button.dataset.source;
+                
+                currentFilterSource = button.dataset.source;
                 
                 if (window.innerWidth <= 768) {
                     mainContent.style.display = 'none';
                     sidebar.style.display = 'block';
                 }
-                displayArticles(source);
+                
+                resetAndLoadArticles();
             });
         });
     </script>

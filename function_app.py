@@ -55,7 +55,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
              pass
              
         sent_count = 0
-        for rank, story_id in enumerate(story_ids):
+        for story_id in story_ids:
             story_detail_url = f"{HACKER_NEWS_API_BASE}/item/{story_id}.json"
             story_res = requests.get(story_detail_url, timeout=15)
             story_data = story_res.json()
@@ -63,8 +63,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
                 message = {
                     "source": "HackerNews", 
                     "url": story_data["url"], 
-                    "title": story_data.get("title", "No Title"),
-                    "rank": rank 
+                    "title": story_data.get("title", "No Title")
                 }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 sent_count += 1
@@ -146,7 +145,6 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
-        rank = message.get("rank")
 
         try:
             # DBにアイテムが存在するかを確認
@@ -181,7 +179,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
             
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=translated_title, source=source,
-                blob_name=None, original_title=original_title, rank=rank, status='title_only'
+                blob_name=None, original_title=original_title, status='title_only'
             )
             logging.info(f"Successfully processed title only for: {url}")
 
@@ -191,7 +189,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
             
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=translated_title, source=source,
-                blob_name=blob_name, original_title=original_title, rank=rank, status='summarized'
+                blob_name=blob_name, original_title=original_title, status='summarized'
             )
             logging.info(f"Successfully processed and summarized: {translated_title}")
 
@@ -203,7 +201,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=message.get("title", "No Title"), 
                 source=message.get("source", "Unknown"), blob_name=None, 
-                original_title=message.get("title", "No Title"), rank=message.get("rank"), status='failed'
+                original_title=message.get("title", "No Title"), status='failed'
             )
         raise e
     finally:
@@ -300,7 +298,7 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str, rank: int = None):
+def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -315,8 +313,6 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
     }
     if blob_name is None:
         item_body['summary_blob_path'] = None
-    if rank is not None:
-        item_body['rank'] = rank
     articles_container.upsert_item(body=item_body)
     logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}, status: {status}")
 
@@ -331,7 +327,7 @@ def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
 @fast_app.get("/api/articles_data", response_model=list)
-async def get_all_articles_data():
+async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int = 50):
     try:
         cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
         cosmos_key = os.environ.get('COSMOS_KEY')
@@ -342,24 +338,24 @@ async def get_all_articles_data():
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        all_items = []
-        categories = ['HackerNews', 'arXiv cs.AI', 'arXiv cs.LG']
+        parameters = []
+        query = "SELECT * FROM c"
         
-        for category in categories:
-            if category == 'HackerNews':
-                query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.rank ASC OFFSET 0 LIMIT 100"
-            else:
-                query = f"SELECT * FROM c WHERE c.source = '{category}' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 100"
-            
-            items = list(articles_container.query_items(
-                query=query, enable_cross_partition_query=True
-            ))
-            all_items.extend(items)
+        if source and source != 'All':
+            query += " WHERE c.source = @source"
+            parameters.append({"name": "@source", "value": source})
         
-        all_items.sort(key=lambda x: x.get('processed_at', ''), reverse=True)
-        return all_items
+        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+        
+        items = list(articles_container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True if not source or source == 'All' else False
+        ))
+        
+        return items
     except Exception as e:
-        logging.error(f"Error fetching all articles data: {e}\n{traceback.format_exc()}")
+        logging.error(f"Error fetching articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
 
 @fast_app.get("/api/", response_class=HTMLResponse)
