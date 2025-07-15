@@ -9,6 +9,8 @@ import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
+import azure.functions as func
+
 from fastapi.responses import Response
 from email.utils import formatdate
 from urllib.parse import urljoin
@@ -22,6 +24,7 @@ from openai import AzureOpenAI
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, FileResponse
 
 app = func.FunctionApp()
 
@@ -538,3 +541,12 @@ async def generate_rss_feed(request: Request):
     except Exception as e:
         logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
+
+@fast_app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def redirect_root_to_front():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/api/front")
+
+@fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
+async def read_google_verification():
+    return "static/googlec43f505db609c105.html"
