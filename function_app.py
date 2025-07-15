@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 app = func.FunctionApp()
 
 # ===================================================================
-# データ収集関数群
+# データ収集関数群 (変更なし)
 # ===================================================================
 @app.schedule(schedule="0 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
@@ -164,7 +164,7 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
         raise
 
 # ===================================================================
-# Function 2: Article Summarizer
+# Function 2: Article Summarizer (変更なし)
 # ===================================================================
 @app.queue_trigger(arg_name="msg", queue_name="urls-to-summarize",
                    connection="MyStorageQueueConnectionString")
@@ -192,13 +192,10 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         source = message.get("source", "Unknown")
 
         try:
-            # DBにアイテムが存在するかを確認
             articles_container.read_item(item=item_id, partition_key=item_id)
-            # アイテムが存在した場合、ステータスに関わらず処理をスキップする
             logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
             return
         except exceptions.CosmosResourceNotFoundError:
-            # DBにアイテムが存在しない（新しい記事の）場合のみ、処理を続行
             logging.info(f"New article. Proceeding with processing. URL: {url}")
             pass
         
@@ -253,7 +250,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         time.sleep(1)
 
 # ===================================================================
-# Helper Functions
+# Helper Functions (変更なし)
 # ===================================================================
 def _get_title_translation_from_azure_openai(title: str) -> str:
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -371,6 +368,7 @@ templates = Jinja2Templates(directory="templates")
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
+# ★★★ 変更点 ★★★
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int = 50):
     try:
@@ -387,11 +385,14 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         query = "SELECT * FROM c"
         
         if source and source != 'All':
+            # arXivが選択された場合、cs.AIとcs.LGの両方を対象とする
             if source == 'arXiv':
-                query += " WHERE STARTSWITH(c.source, @source)"
+                query += " WHERE c.source = @source1 OR c.source = @source2"
+                parameters.append({"name": "@source1", "value": "arXiv cs.AI"})
+                parameters.append({"name": "@source2", "value": "arXiv cs.LG"})
             else:
                 query += " WHERE c.source = @source"
-            parameters.append({"name": "@source", "value": source})
+                parameters.append({"name": "@source", "value": source})
         
         query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
         
@@ -405,6 +406,8 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
     except Exception as e:
         logging.error(f"Error fetching articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
+# ★★★ ここまで ★★★
+
 
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
@@ -501,7 +504,7 @@ async def read_article(request: Request, article_id: str):
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
 
-# ★★★ ここにRSSフィード生成機能が元通り含まれています ★★★
+# ★★★ 変更点 ★★★
 @fast_app.get("/api/rss", response_class=Response)
 async def generate_rss_feed(request: Request):
     """
@@ -547,8 +550,12 @@ async def generate_rss_feed(request: Request):
         for item in items:
             item_elem = ET.SubElement(channel, "item")
             
-            ET.SubElement(item_elem, "title").text = item.get('title', 'No Title')
-            
+            # タイトルにソースを追加してRSSリーダーでの視認性を向上
+            source_text = item.get('source', 'Unknown')
+            original_title = item.get('title', 'No Title')
+            ET.SubElement(item_elem, "title").text = f"[{source_text}] {original_title}"
+            ET.SubElement(item_elem, "category").text = source_text
+
             # 各記事へのパーマリンク
             article_link = urljoin(base_url, f"article/{item['id']}")
             ET.SubElement(item_elem, "link").text = article_link
@@ -569,7 +576,6 @@ async def generate_rss_feed(request: Request):
                 try:
                     blob_client = blob_service_client.get_blob_client(container=summary_container_name, blob=blob_path)
                     if blob_client.exists():
-                        # RSSのdescriptionにはプレーンテキストの要約をそのまま使用
                         description = blob_client.download_blob().readall().decode('utf-8')
                     else:
                         logging.warning(f"Summary blob not found for RSS: {blob_path}")
@@ -587,6 +593,8 @@ async def generate_rss_feed(request: Request):
     except Exception as e:
         logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
+# ★★★ ここまで ★★★
+
 
 @fast_app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def redirect_root_to_front():
