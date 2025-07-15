@@ -121,6 +121,48 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
+@app.schedule(schedule="10 */6 * * *", arg_name="myTimer", run_on_startup=False)
+def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
+    logging.info('TechCrunch Collector function ran.')
+    try:
+        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
+        if not storage_connection_string:
+            raise ValueError("MyStorageQueueConnectionString is not set.")
+        
+        TECHCRUNCH_RSS_URL = "https://techcrunch.com/feed/"
+        
+        response = requests.get(TECHCRUNCH_RSS_URL, timeout=15)
+        response.raise_for_status()
+
+        xml_data = response.content
+        root = ET.fromstring(xml_data)
+        
+        queue_client = QueueClient.from_connection_string(
+            conn_str=storage_connection_string,
+            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
+        )
+
+        sent_count = 0
+        for item in root.findall('.//channel/item'):
+            title = item.find('title').text
+            url = item.find('link').text
+            
+            if title and url:
+                message = {
+                    "source": "TechCrunch", 
+                    "url": url, 
+                    "title": title
+                }
+                queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                sent_count += 1
+
+        logging.info(f"Successfully sent {sent_count} URLs from TechCrunch to the queue.")
+
+    except Exception as e:
+        logging.error(f"--- FATAL ERROR in TechCrunchCollector ---")
+        logging.error(traceback.format_exc())
+        raise
+
 # ===================================================================
 # Function 2: Article Summarizer
 # ===================================================================
@@ -345,7 +387,10 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         query = "SELECT * FROM c"
         
         if source and source != 'All':
-            query += " WHERE c.source = @source"
+            if source == 'arXiv':
+                query += " WHERE STARTSWITH(c.source, @source)"
+            else:
+                query += " WHERE c.source = @source"
             parameters.append({"name": "@source", "value": source})
         
         query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
@@ -353,7 +398,7 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         items = list(articles_container.query_items(
             query=query,
             parameters=parameters,
-            enable_cross_partition_query=True if not source or source == 'All' else False
+            enable_cross_partition_query=True
         ))
         
         return items
@@ -456,6 +501,7 @@ async def read_article(request: Request, article_id: str):
         logging.error(f"Error reading article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
 
+# ★★★ ここにRSSフィード生成機能が元通り含まれています ★★★
 @fast_app.get("/api/rss", response_class=Response)
 async def generate_rss_feed(request: Request):
     """
