@@ -34,7 +34,6 @@
             box-sizing: border-box;
         }
         
-        /* ★★★ 変更点 ★★★ */
         .sidebar-header {
             display: flex;
             justify-content: space-between;
@@ -54,7 +53,6 @@
             width: 24px;
             height: 24px;
         }
-        /* ★★★ ここまで ★★★ */
 
         /* タブナビゲーション */
         .tab-nav {
@@ -98,31 +96,32 @@
 
         .article-list li {
             margin-bottom: 15px;
-            padding-bottom: 15px;
+            padding: 15px;
             border-bottom: 1px solid #f0f0f0;
             cursor: pointer;
         }
-
+        
         .article-list li:last-child {
             border-bottom: none;
         }
 
-        .article-list li a {
+        .article-list li a.article-link-wrapper {
             display: block;
             text-decoration: none;
-            color: #333;
+            color: inherit;
+        }
+
+        .article-title {
             font-weight: bold;
             font-size: 1.1em;
+            color: #333;
             margin-bottom: 5px;
         }
 
-        .article-list li a:hover {
-            color: #007bff;
-        }
-
-        .article-list li small {
+        .article-meta {
             color: #777;
             font-size: 0.85em;
+            word-break: break-all;
         }
 
         /* メインコンテンツエリア */
@@ -261,6 +260,7 @@
                     </svg>
                 </a>
             </div>
+
             <div class="tab-nav">
                 <button class="tab-button active" data-source="All">All</button>
                 <button class="tab-button" data-source="HackerNews">HackerNews</button>
@@ -359,27 +359,27 @@
             articles.forEach(article => {
                 const li = document.createElement('li');
                 li.setAttribute('data-id', article.id);
-                li.setAttribute('data-source', article.source);
                 
-                const link = document.createElement('a');
-                link.href = `/article/${article.id}`;
-                link.target = "_blank";
-                link.rel = "noopener noreferrer";
-                link.innerHTML = `<strong>${article.title || 'No Title'}</strong>`;
-                
-                link.onclick = (event) => {
+                const linkWrapper = document.createElement('a');
+                linkWrapper.href = "#"; 
+                linkWrapper.className = "article-link-wrapper";
+                linkWrapper.onclick = (event) => {
                     event.preventDefault();
                     handleArticleClick(article.id);
                 };
 
-                const small = document.createElement('small');
-                const summarizedAt = new Date(article.processed_at).toLocaleString('ja-JP');
-                small.textContent = `Source: ${article.source} | Summarized at: ${summarizedAt}`;
-                
-                li.appendChild(link);
-                li.appendChild(document.createElement('br'));
-                li.appendChild(small);
+                const titleDiv = document.createElement('div');
+                titleDiv.className = 'article-title';
+                titleDiv.innerHTML = `<strong>${article.title || 'No Title'}</strong>`;
 
+                const metaDiv = document.createElement('div');
+                metaDiv.className = 'article-meta';
+                const summarizedAt = new Date(article.processed_at).toLocaleString('ja-JP');
+                metaDiv.textContent = `Source: ${article.source} | Summarized at: ${summarizedAt}`;
+                
+                linkWrapper.appendChild(titleDiv);
+                linkWrapper.appendChild(metaDiv);
+                li.appendChild(linkWrapper);
                 articleList.appendChild(li);
             });
         }
