@@ -34,13 +34,29 @@
             box-sizing: border-box;
         }
 
-        .sidebar h2 {
-            font-size: 1.5em;
-            color: #2c3e50;
-            margin-top: 0;
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 20px;
             border-bottom: 2px solid #007bff;
             padding-bottom: 10px;
+        }
+
+        .sidebar-header h2 {
+            font-size: 1.5em;
+            color: #2c3e50;
+            margin: 0;
+        }
+        
+        .rss-icon {
+            width: 24px;
+            height: 24px;
+            fill: #f26522; /* RSSのオレンジ色 */
+            transition: opacity 0.2s;
+        }
+        .rss-icon:hover {
+            opacity: 0.7;
         }
 
 /* タブナビゲーション (新デザイン) */
@@ -237,7 +253,17 @@
 <body>
     <div class="dashboard-container">
         <div class="sidebar">
-            <h2>最新記事一覧</h2>
+            <div class="sidebar-header">
+                <h2>最新記事一覧</h2>
+                <a href="/api/rss" target="_blank" title="RSSフィードを購読">
+                    <svg class="rss-icon" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+                        <rect fill="none" height="256" width="256"/>
+                        <path d="M56,48A152,152,0,0,1,208,200" fill="none" stroke="#f26522" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+                        <path d="M56,120a80,80,0,0,1,80,80" fill="none" stroke="#f26522" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+                        <circle cx="60" cy="196" r="16"/>
+                    </svg>
+                </a>
+            </div>
             <div class="tab-nav">
                 <button class="tab-button active" data-source="All">All</button>
                 <button class="tab-button" data-source="HackerNews">HackerNews</button>
