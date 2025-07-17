@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 app = func.FunctionApp()
 
 # ===================================================================
-# データ収集関数群
+# データ収集関数群 (変更なし)
 # ===================================================================
 @app.schedule(schedule="0 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
@@ -76,9 +76,6 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 不具合を修正したArXivCollector ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 @app.schedule(schedule="5 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
     logging.info('ArXiv AI Collector function (API version) ran.')
@@ -92,7 +89,7 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         )
         TARGET_CATEGORIES = ['cs.AI', 'cs.LG']
         BASE_API_URL = 'http://export.arxiv.org/api/query?'
-        max_results = 100 # カテゴリごとの最大取得件数
+        max_results = 100
         total_sent_count = 0
         for category in TARGET_CATEGORIES:
             logging.info(f"Fetching articles for category: {category}")
@@ -116,7 +113,6 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
                 message = {"source": source_name_for_message, "url": url, "title": title}
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 category_sent_count += 1
-            # ログ出力の修正：ループ内で変化するカテゴリ名を正しく表示
             logging.info(f"Successfully sent {category_sent_count} URLs from arXiv {category} to the queue.")
             total_sent_count += category_sent_count
         logging.info(f"Total URLs sent from ArXiv: {total_sent_count}")
@@ -169,8 +165,11 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
         raise
 
 # ===================================================================
-# Function 2: Article Summarizer (変更なし)
+# Function 2: Article Summarizer
 # ===================================================================
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 日時が上書きされないよう修正 ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 @app.queue_trigger(arg_name="msg", queue_name="urls-to-summarize",
                    connection="MyStorageQueueConnectionString")
 def ArticleSummarizer(msg: func.QueueMessage) -> None:
@@ -196,11 +195,14 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
 
+        # データベースに記事が既に存在するかを確認
         try:
-            articles_container.read_item(item=item_id, partition_key=item_id)
+            articles_container.read_item(item=item_id, partition_key=source)
+            # 存在した場合は、何もせずに処理を終了する
             logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
             return
         except exceptions.CosmosResourceNotFoundError:
+            # 存在しない場合のみ、処理を続行する
             logging.info(f"New article. Proceeding with processing. URL: {url}")
             pass
 
@@ -364,7 +366,7 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
     logging.info(f"Metadata upserted to Cosmos DB with id: {item_id}, status: {status}")
 
 # ===================================================================
-# Web UI (FastAPI)
+# Web UI (FastAPI) (変更なし)
 # ===================================================================
 fast_app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -373,10 +375,6 @@ templates = Jinja2Templates(directory="templates")
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
-
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ フィルターを最終修正したAPI ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int = 50):
     try:
@@ -389,26 +387,35 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        parameters = []
-        query = "SELECT * FROM c"
-
-        if source and source != 'All':
-            if source == 'arXiv':
-                # 最も確実なOR条件を使ったクエリ
-                query += " WHERE c.source = @source1 OR c.source = @source2"
-                parameters.append({"name": "@source1", "value": "arXiv cs.AI"})
-                parameters.append({"name": "@source2", "value": "arXiv cs.LG"})
-            else:
+        items = []
+        if source == 'arXiv':
+            query_ai = "SELECT * FROM c WHERE c.source = 'arXiv cs.AI' ORDER BY c.processed_at DESC"
+            items_ai = list(articles_container.query_items(
+                query=query_ai,
+                enable_cross_partition_query=True
+            ))
+            query_lg = "SELECT * FROM c WHERE c.source = 'arXiv cs.LG' ORDER BY c.processed_at DESC"
+            items_lg = list(articles_container.query_items(
+                query=query_lg,
+                enable_cross_partition_query=True
+            ))
+            all_items = items_ai + items_lg
+            all_items.sort(key=lambda x: x['processed_at'], reverse=True)
+            items = all_items[skip : skip + limit]
+        else:
+            parameters = []
+            query = "SELECT * FROM c"
+            if source != 'All':
                 query += " WHERE c.source = @source"
                 parameters.append({"name": "@source", "value": source})
 
-        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+            query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
 
-        items = list(articles_container.query_items(
-            query=query,
-            parameters=parameters,
-            enable_cross_partition_query=True
-        ))
+            items = list(articles_container.query_items(
+                query=query,
+                parameters=parameters,
+                enable_cross_partition_query=True
+            ))
 
         return items
     except Exception as e:
