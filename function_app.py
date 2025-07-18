@@ -29,10 +29,11 @@ from fastapi.responses import HTMLResponse, FileResponse
 app = func.FunctionApp()
 
 # ===================================================================
-# データ収集関数群 (変更なし)
+# データ収集関数群
 # ===================================================================
 @app.schedule(schedule="0 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
+    # (この関数は変更なし)
     logging.info('Hacker News Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -78,6 +79,7 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
 
 @app.schedule(schedule="5 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def ArXivCollector(myTimer: func.TimerRequest) -> None:
+    # (この関数は変更なし)
     logging.info('ArXiv AI Collector function (API version) ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -121,9 +123,9 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
-
 @app.schedule(schedule="10 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
+    # (この関数は変更なし)
     logging.info('TechCrunch Collector function ran.')
     try:
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
@@ -164,12 +166,54 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
         logging.error(traceback.format_exc())
         raise
 
+# ★★★ 新しく追加する関数 ★★★
+@app.schedule(schedule="15 */6 * * *", arg_name="myTimer", run_on_startup=False)
+def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
+    logging.info('Hugging Face Blog Collector function ran.')
+    try:
+        storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
+        if not storage_connection_string:
+            raise ValueError("MyStorageQueueConnectionString is not set.")
+        
+        HF_BLOG_RSS_URL = "https://huggingface.co/blog/feed.xml"
+        
+        response = requests.get(HF_BLOG_RSS_URL, timeout=15)
+        response.raise_for_status()
+
+        xml_data = response.content
+        root = ET.fromstring(xml_data)
+        
+        queue_client = QueueClient.from_connection_string(
+            conn_str=storage_connection_string,
+            queue_name=os.environ.get("QUEUE_NAME", "urls-to-summarize")
+        )
+
+        sent_count = 0
+        # RSSフィードの<item>タグをループ
+        for item in root.findall('.//channel/item'):
+            title = item.find('title').text
+            url = item.find('link').text
+            
+            if title and url:
+                message = {
+                    "source": "HuggingFace", # ソース名を指定
+                    "url": url, 
+                    "title": title
+                }
+                queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                sent_count += 1
+
+        logging.info(f"Successfully sent {sent_count} URLs from Hugging Face Blog to the queue.")
+
+    except Exception as e:
+        logging.error(f"--- FATAL ERROR in HuggingFaceBlogCollector ---")
+        logging.error(traceback.format_exc())
+        raise
+# ★★★ ここまで ★★★
+
 # ===================================================================
-# Function 2: Article Summarizer
+# Function 2: Article Summarizer (変更なし)
 # ===================================================================
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ 日時が上書きされないよう修正 ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 @app.queue_trigger(arg_name="msg", queue_name="urls-to-summarize",
                    connection="MyStorageQueueConnectionString")
 def ArticleSummarizer(msg: func.QueueMessage) -> None:
@@ -195,14 +239,11 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
 
-        # データベースに記事が既に存在するかを確認
         try:
             articles_container.read_item(item=item_id, partition_key=source)
-            # 存在した場合は、何もせずに処理を終了する
             logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
             return
         except exceptions.CosmosResourceNotFoundError:
-            # 存在しない場合のみ、処理を続行する
             logging.info(f"New article. Proceeding with processing. URL: {url}")
             pass
 
@@ -387,35 +428,25 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        items = []
-        if source == 'arXiv':
-            query_ai = "SELECT * FROM c WHERE c.source = 'arXiv cs.AI' ORDER BY c.processed_at DESC"
-            items_ai = list(articles_container.query_items(
-                query=query_ai,
-                enable_cross_partition_query=True
-            ))
-            query_lg = "SELECT * FROM c WHERE c.source = 'arXiv cs.LG' ORDER BY c.processed_at DESC"
-            items_lg = list(articles_container.query_items(
-                query=query_lg,
-                enable_cross_partition_query=True
-            ))
-            all_items = items_ai + items_lg
-            all_items.sort(key=lambda x: x['processed_at'], reverse=True)
-            items = all_items[skip : skip + limit]
-        else:
-            parameters = []
-            query = "SELECT * FROM c"
-            if source != 'All':
+        parameters = []
+        query = "SELECT * FROM c"
+
+        if source and source != 'All':
+            if source == 'arXiv':
+                query += " WHERE c.source = @source1 OR c.source = @source2"
+                parameters.append({"name": "@source1", "value": "arXiv cs.AI"})
+                parameters.append({"name": "@source2", "value": "arXiv cs.LG"})
+            else:
                 query += " WHERE c.source = @source"
                 parameters.append({"name": "@source", "value": source})
 
-            query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
 
-            items = list(articles_container.query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True
-            ))
+        items = list(articles_container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True
+        ))
 
         return items
     except Exception as e:
@@ -590,7 +621,53 @@ async def generate_rss_feed(request: Request):
     except Exception as e:
         logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
+    
+@fast_app.get("/sitemap.xml", response_class=Response)
+async def generate_sitemap(request: Request):
+    logging.info("Sitemap generation request received.")
+    try:
+        cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
+        cosmos_key = os.environ.get('COSMOS_KEY')
+        if not cosmos_endpoint or not cosmos_key:
+            raise HTTPException(status_code=500, detail="Sitemapに必要な接続設定が不完全です。")
 
+        cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
+        db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
+        articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+        
+        # データベースから全記事のIDと更新日時を取得
+        query = "SELECT c.id, c.processed_at FROM c WHERE c.status = 'summarized'"
+        items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
+
+        # XMLのルート要素を定義
+        urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+
+        base_url = str(request.base_url)
+
+        # 各記事のURLをXMLに追加
+        for item in items:
+            url_element = ET.SubElement(urlset, "url")
+            
+            # <loc> - ページの完全なURL
+            loc = ET.SubElement(url_element, "loc")
+            loc.text = urljoin(base_url, f"article/{item['id']}")
+            
+            # <lastmod> - 最終更新日
+            lastmod = ET.SubElement(url_element, "lastmod")
+            # 日付をYYYY-MM-DD形式にフォーマット
+            lastmod.text = datetime.fromisoformat(item['processed_at'].replace('Z', '+00:00')).strftime('%Y-%m-%d')
+            
+            # <changefreq> と <priority> (任意)
+            ET.SubElement(url_element, "changefreq").text = "daily"
+            ET.SubElement(url_element, "priority").text = "0.8"
+
+        # XMLを文字列に変換してレスポンスとして返す
+        sitemap_string = ET.tostring(urlset, encoding='UTF-8', method='xml', xml_declaration=True).decode('utf-8')
+        return Response(content=sitemap_string, media_type="application/xml; charset=utf-8")
+
+    except Exception as e:
+        logging.error(f"Error generating sitemap: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Sitemapの生成中にエラーが発生しました: {e}")
 
 @fast_app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def redirect_root_to_front():
