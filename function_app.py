@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 app = func.FunctionApp()
 
@@ -167,7 +168,6 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
 def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
     logging.info('Hugging Face Blog Collector function ran.')
     try:
-        # Cosmos DBクライアントの初期化
         cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
         cosmos_key = os.environ.get('COSMOS_KEY')
         if not cosmos_endpoint or not cosmos_key:
@@ -195,32 +195,33 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
         )
 
         sent_count = 0
-        checked_count = 0
+        # RSSフィードは新しい順に並んでいると仮定
         for item in root.findall('.//channel/item'):
-            checked_count += 1
             title = item.find('title').text
             url = item.find('link').text
             
-            if title and url:
-                # URLから一意のIDを生成
-                item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
-                
-                # Cosmos DBに存在確認
-                try:
-                    articles_container.read_item(item=item_id, partition_key=item_id)
-                    # logging.info(f"Article already exists: {url}")
-                    continue # 存在する場合はスキップ
-                except exceptions.CosmosResourceNotFoundError:
-                    # 存在しない場合のみキューに追加
-                    message = {
-                        "source": "HuggingFace",
-                        "url": url, 
-                        "title": title
-                    }
-                    queue_client.send_message(json.dumps(message, ensure_ascii=False))
-                    sent_count += 1
+            if not (title and url):
+                continue
 
-        logging.info(f"Checked {checked_count} articles from Hugging Face Blog. Sent {sent_count} new URLs to the queue.")
+            item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
+            
+            try:
+                # データベースに同じ記事が既に存在するか確認
+                articles_container.read_item(item=item_id, partition_key=item_id)
+                # 存在した場合、これ以上古い記事をチェックする必要はないのでループを抜ける
+                logging.info(f"Found existing article, stopping collection for this run. URL: {url}")
+                break 
+            except exceptions.CosmosResourceNotFoundError:
+                # 存在しない場合は新しい記事なので、キューに追加
+                message = {
+                    "source": "HuggingFace",
+                    "url": url, 
+                    "title": title
+                }
+                queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                sent_count += 1
+        
+        logging.info(f"Finished Hugging Face Blog collection. Sent {sent_count} new URLs to the queue.")
 
     except Exception as e:
         logging.error(f"--- FATAL ERROR in HuggingFaceBlogCollector ---")
@@ -436,6 +437,7 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
 # ===================================================================
 fast_app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
@@ -533,12 +535,17 @@ async def read_single_article_page(request: Request, article_id: str):
             markdown_content = blob_client.download_blob().readall().decode('utf-8')
             html_content = markdown.markdown(markdown_content)
 
-        return templates.TemplateResponse("permalink.html", {
-            "request": request, "title": article_meta.get('title', 'No Title'),
-            "content": html_content, "source_url": article_meta.get('url', '#'),
+        context = {
+            "request": request, # この行を追加
+            "title": article_meta.get('title', 'No Title'),
+            "content": html_content,
+            "source_url": article_meta.get('url', '#'),
             "original_title": article_meta.get('original_title', ''),
             "source": article_meta.get('source', 'Unknown')
-        })
+        }
+
+        return templates.TemplateResponse("permalink.html", context)
+    
     except Exception as e:
         logging.error(f"Error reading permalink article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
@@ -706,3 +713,7 @@ async def redirect_root_to_front():
 @fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
 async def read_google_verification():
     return "static/googlec43f505db609c105.html"
+
+@fast_app.get("/robots.txt", response_class=FileResponse, include_in_schema=False)
+async def read_robots_txt():
+    return "static/robots.txt"
