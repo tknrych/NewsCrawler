@@ -167,6 +167,16 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
 def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
     logging.info('Hugging Face Blog Collector function ran.')
     try:
+        # Cosmos DBクライアントの初期化
+        cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
+        cosmos_key = os.environ.get('COSMOS_KEY')
+        if not cosmos_endpoint or not cosmos_key:
+            raise ValueError("Cosmos DBの接続設定が不完全です。")
+        
+        cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
+        db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
+        articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
+
         storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
         if not storage_connection_string:
             raise ValueError("MyStorageQueueConnectionString is not set.")
@@ -185,20 +195,32 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
         )
 
         sent_count = 0
+        checked_count = 0
         for item in root.findall('.//channel/item'):
+            checked_count += 1
             title = item.find('title').text
             url = item.find('link').text
             
             if title and url:
-                message = {
-                    "source": "HuggingFace",
-                    "url": url, 
-                    "title": title
-                }
-                queue_client.send_message(json.dumps(message, ensure_ascii=False))
-                sent_count += 1
+                # URLから一意のIDを生成
+                item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
+                
+                # Cosmos DBに存在確認
+                try:
+                    articles_container.read_item(item=item_id, partition_key=item_id)
+                    # logging.info(f"Article already exists: {url}")
+                    continue # 存在する場合はスキップ
+                except exceptions.CosmosResourceNotFoundError:
+                    # 存在しない場合のみキューに追加
+                    message = {
+                        "source": "HuggingFace",
+                        "url": url, 
+                        "title": title
+                    }
+                    queue_client.send_message(json.dumps(message, ensure_ascii=False))
+                    sent_count += 1
 
-        logging.info(f"Successfully sent {sent_count} URLs from Hugging Face Blog to the queue.")
+        logging.info(f"Checked {checked_count} articles from Hugging Face Blog. Sent {sent_count} new URLs to the queue.")
 
     except Exception as e:
         logging.error(f"--- FATAL ERROR in HuggingFaceBlogCollector ---")
