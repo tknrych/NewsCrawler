@@ -196,7 +196,7 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
 
         sent_count = 0
         # RSSフィードは新しい順に並んでいると仮定
-        for item in root.findall('.//channel/item'):
+        for item in root.findall('.//channel/item')[:50]:
             title = item.find('title').text
             url = item.find('link').text
             
@@ -446,6 +446,8 @@ def WebUI(req: func.HttpRequest) -> func.HttpResponse:
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★★★ arXivフィルターの不具合を修正した最終確定版のコード ★★★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# @fast_app.get("/api/articles_data", response_model=list)内のロジックを置き換え
+
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int = 50):
     try:
@@ -458,41 +460,27 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        items = []
-        if source == 'arXiv':
-            # 確実性を優先し、2回クエリを実行して結果を結合・ソートする方法
-            query_ai = "SELECT * FROM c WHERE c.source = 'arXiv cs.AI'"
-            items_ai = list(articles_container.query_items(query=query_ai, enable_cross_partition_query=True))
-            
-            query_lg = "SELECT * FROM c WHERE c.source = 'arXiv cs.LG'"
-            items_lg = list(articles_container.query_items(query=query_lg, enable_cross_partition_query=True))
-            
-            all_items = items_ai + items_lg
-            all_items.sort(key=lambda x: x['processed_at'], reverse=True)
-            
-            items = all_items[skip : skip + limit]
-        else:
-            # All または HackerNews, TechCrunch, HuggingFace の場合
-            parameters = []
-            query = "SELECT * FROM c"
-            if source != 'All':
-                query += " WHERE c.source = @source"
-                parameters.append({"name": "@source", "value": source})
-
-            query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
-
-            items = list(articles_container.query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True
-            ))
-
+        parameters = []
+        query = "SELECT * FROM c"
+        
+        # 'All'以外のフィルターが選択された場合の処理に統一
+        if source and source != 'All':
+            query += " WHERE c.source = @source"
+            parameters.append({"name": "@source", "value": source})
+        
+        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+        
+        items = list(articles_container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True
+        ))
+        
         return items
     except Exception as e:
         logging.error(f"Error fetching articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
 
-# (以降のコードは変更なし)
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
 async def read_root(request: Request):
