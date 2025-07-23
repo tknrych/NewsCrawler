@@ -15,6 +15,8 @@ from fastapi.responses import Response
 from email.utils import formatdate
 from urllib.parse import urljoin
 
+from fastapi.staticfiles import StaticFiles
+
 from azure.cosmos import CosmosClient, exceptions
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient
@@ -25,12 +27,11 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 
 app = func.FunctionApp()
 
 # ===================================================================
-# データ収集関数群 (変更なし)
+# データ収集関数群
 # ===================================================================
 @app.schedule(schedule="0 */6 * * *", arg_name="myTimer", run_on_startup=False)
 def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
@@ -195,7 +196,6 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
         )
 
         sent_count = 0
-        # RSSフィードは新しい順に並んでいると仮定
         for item in root.findall('.//channel/item')[:50]:
             title = item.find('title').text
             url = item.find('link').text
@@ -206,13 +206,10 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
             item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
             
             try:
-                # データベースに同じ記事が既に存在するか確認
                 articles_container.read_item(item=item_id, partition_key=item_id)
-                # 存在した場合、これ以上古い記事をチェックする必要はないのでループを抜ける
                 logging.info(f"Found existing article, stopping collection for this run. URL: {url}")
                 break 
             except exceptions.CosmosResourceNotFoundError:
-                # 存在しない場合は新しい記事なので、キューに追加
                 message = {
                     "source": "HuggingFace",
                     "url": url, 
@@ -254,11 +251,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
         item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, url))
         
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★ 取得済み記事の日時上書きを確実に防止する修正 ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         try:
-            # 記事IDをパーティションキーとしてアイテムを検索 (最も確実な方法)
             articles_container.read_item(item=item_id, partition_key=item_id)
             logging.info(f"Article already exists in DB. Skipping processing. URL: {url}")
             return
@@ -323,7 +316,6 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 # Helper Functions
 # ===================================================================
 def _get_title_translation_from_azure_openai(title: str) -> str:
-    # (この関数は変更なし)
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -358,7 +350,6 @@ def _get_title_translation_from_azure_openai(title: str) -> str:
         raise e
 
 def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str, str]:
-    # (この関数は変更なし)
     azure_openai_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     azure_openai_key = os.environ.get("AZURE_OPENAI_API_KEY")
     azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -395,7 +386,6 @@ def _get_summary_and_title_from_azure_openai(text: str, title: str) -> tuple[str
         raise e
 
 def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
-    # (この関数は変更なし)
     storage_connection_string = os.environ.get("MyStorageQueueConnectionString")
     if not storage_connection_string:
         raise ValueError("ストレージの接続文字列が設定されていません。")
@@ -414,7 +404,6 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     return blob_name
 
 def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str):
-    # (この関数は変更なし)
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -443,11 +432,6 @@ fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 def WebUI(req: func.HttpRequest) -> func.HttpResponse:
     return func.AsgiMiddleware(fast_app).handle(req)
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ arXivフィルターの不具合を修正した最終確定版のコード ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# @fast_app.get("/api/articles_data", response_model=list)内のロジックを置き換え
-
 @fast_app.get("/api/articles_data", response_model=list)
 async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int = 50):
     try:
@@ -460,22 +444,33 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        parameters = []
-        query = "SELECT * FROM c"
-        
-        # 'All'以外のフィルターが選択された場合の処理に統一
-        if source and source != 'All':
-            query += " WHERE c.source = @source"
-            parameters.append({"name": "@source", "value": source})
-        
-        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
-        
-        items = list(articles_container.query_items(
-            query=query,
-            parameters=parameters,
-            enable_cross_partition_query=True
-        ))
-        
+        items = []
+        if source == 'arXiv':
+            query_ai = "SELECT * FROM c WHERE c.source = 'arXiv cs.AI'"
+            items_ai = list(articles_container.query_items(query=query_ai, enable_cross_partition_query=True))
+            
+            query_lg = "SELECT * FROM c WHERE c.source = 'arXiv cs.LG'"
+            items_lg = list(articles_container.query_items(query=query_lg, enable_cross_partition_query=True))
+            
+            all_items = items_ai + items_lg
+            all_items.sort(key=lambda x: x['processed_at'], reverse=True)
+            
+            items = all_items[skip : skip + limit]
+        else:
+            parameters = []
+            query = "SELECT * FROM c"
+            if source != 'All':
+                query += " WHERE c.source = @source"
+                parameters.append({"name": "@source", "value": source})
+
+            query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+
+            items = list(articles_container.query_items(
+                query=query,
+                parameters=parameters,
+                enable_cross_partition_query=True
+            ))
+
         return items
     except Exception as e:
         logging.error(f"Error fetching articles data: {e}\n{traceback.format_exc()}")
@@ -508,10 +503,13 @@ async def read_single_article_page(request: Request, article_id: str):
             raise HTTPException(status_code=404, detail="指定された記事が見つかりません。")
         article_meta = items[0]
 
+        summary_for_meta = ""
         if article_meta.get('status') == 'title_only':
             html_content = markdown.markdown("この記事の本文は取得できませんでした。")
+            summary_for_meta = "この記事の本文は取得できませんでした。"
         elif article_meta.get('status') == 'failed' or not article_meta.get('summary_blob_path'):
             html_content = markdown.markdown("要約の生成中にエラーが発生しました。")
+            summary_for_meta = "要約の生成中にエラーが発生しました。"
         else:
             blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
             blob_client = blob_service_client.get_blob_client(
@@ -522,18 +520,18 @@ async def read_single_article_page(request: Request, article_id: str):
                 raise HTTPException(status_code=404, detail="要約ファイルが見つかりません。")
             markdown_content = blob_client.download_blob().readall().decode('utf-8')
             html_content = markdown.markdown(markdown_content)
+            summary_for_meta = markdown_content
 
         context = {
-            "request": request, # この行を追加
+            "request": request,
             "title": article_meta.get('title', 'No Title'),
             "content": html_content,
             "source_url": article_meta.get('url', '#'),
             "original_title": article_meta.get('original_title', ''),
-            "source": article_meta.get('source', 'Unknown')
+            "source": article_meta.get('source', 'Unknown'),
+            "summary": summary_for_meta
         }
-
         return templates.TemplateResponse("permalink.html", context)
-    
     except Exception as e:
         logging.error(f"Error reading permalink article {article_id}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事の表示中にエラーが発生しました。")
@@ -648,9 +646,9 @@ async def generate_rss_feed(request: Request):
             ET.SubElement(item_elem, "description").text = description
 
         rss_string = ET.tostring(rss, encoding='UTF-8', method='xml', xml_declaration=True).decode('utf-8')
-        return Response(content=rss_string, media_type="application/xml; charset=utf-8")
-
-    except Exception as e:
+        return Response(content=rss_string, media_type="application/rss+xml; charset=utf-8")
+        
+   except Exception as e:
         logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
     
@@ -697,11 +695,3 @@ async def generate_sitemap(request: Request):
 async def redirect_root_to_front():
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/api/front")
-
-@fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
-async def read_google_verification():
-    return "static/googlec43f505db609c105.html"
-
-@fast_app.get("/robots.txt", response_class=FileResponse, include_in_schema=False)
-async def read_robots_txt():
-    return "static/robots.txt"
