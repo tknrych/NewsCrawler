@@ -4,18 +4,19 @@ import os
 import json
 import requests
 import uuid
-from datetime import datetime, timezone
 import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
-import azure.functions as func
 
-from fastapi.responses import Response
-from email.utils import formatdate
+from datetime import datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from urllib.parse import urljoin
 
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import Response, HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from azure.cosmos import CosmosClient, exceptions
 from azure.core.exceptions import ResourceExistsError
@@ -23,10 +24,6 @@ from azure.storage.blob import BlobServiceClient
 from azure.storage.queue import QueueClient
 from bs4 import BeautifulSoup
 from openai import AzureOpenAI
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, FileResponse
 
 app = func.FunctionApp()
 
@@ -56,8 +53,8 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
         except ResourceExistsError:
             pass
         except Exception as e:
-             logging.warning(f"Could not create queue, may already exist: {e}")
-             pass
+            logging.warning(f"Could not create queue, may already exist: {e}")
+            pass
 
         sent_count = 0
         for story_id in story_ids:
@@ -65,10 +62,12 @@ def HackerNewsCollector(myTimer: func.TimerRequest) -> None:
             story_res = requests.get(story_detail_url, timeout=15)
             story_data = story_res.json()
             if story_data and "url" in story_data:
+                pub_date = datetime.fromtimestamp(story_data.get('time', 0), tz=timezone.utc).isoformat()
                 message = {
                     "source": "HackerNews",
                     "url": story_data["url"],
-                    "title": story_data.get("title", "No Title")
+                    "title": story_data.get("title", "No Title"),
+                    "published_at": pub_date
                 }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 sent_count += 1
@@ -110,9 +109,15 @@ def ArXivCollector(myTimer: func.TimerRequest) -> None:
             for entry in entries:
                 title = entry.find('atom:title', namespace).text.strip()
                 url = entry.find('atom:id', namespace).text.strip()
+                published_at = entry.find('atom:published', namespace).text
                 title = ' '.join(title.split())
                 source_name_for_message = f"arXiv {category}"
-                message = {"source": source_name_for_message, "url": url, "title": title}
+                message = {
+                    "source": source_name_for_message, 
+                    "url": url, 
+                    "title": title,
+                    "published_at": published_at
+                }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 category_sent_count += 1
             logging.info(f"Successfully sent {category_sent_count} URLs from arXiv {category} to the queue.")
@@ -132,7 +137,6 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
             raise ValueError("MyStorageQueueConnectionString is not set.")
 
         TECHCRUNCH_RSS_URL = "https://techcrunch.com/feed/"
-
         response = requests.get(TECHCRUNCH_RSS_URL, timeout=15)
         response.raise_for_status()
 
@@ -148,18 +152,20 @@ def TechCrunchCollector(myTimer: func.TimerRequest) -> None:
         for item in root.findall('.//channel/item'):
             title = item.find('title').text
             url = item.find('link').text
+            pub_date_str = item.find('pubDate').text
+            dt_object = parsedate_to_datetime(pub_date_str)
+            published_at = dt_object.isoformat()
 
             if title and url:
                 message = {
                     "source": "TechCrunch",
                     "url": url,
-                    "title": title
+                    "title": title,
+                    "published_at": published_at
                 }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 sent_count += 1
-
         logging.info(f"Successfully sent {sent_count} URLs from TechCrunch to the queue.")
-
     except Exception as e:
         logging.error(f"--- FATAL ERROR in TechCrunchCollector ---")
         logging.error(traceback.format_exc())
@@ -183,7 +189,6 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
             raise ValueError("MyStorageQueueConnectionString is not set.")
         
         HF_BLOG_RSS_URL = "https://huggingface.co/blog/feed.xml"
-        
         response = requests.get(HF_BLOG_RSS_URL, timeout=15)
         response.raise_for_status()
 
@@ -207,19 +212,23 @@ def HuggingFaceBlogCollector(myTimer: func.TimerRequest) -> None:
             
             try:
                 articles_container.read_item(item=item_id, partition_key=item_id)
-                logging.info(f"Found existing article, stopping collection for this run. URL: {url}")
-                break 
+                logging.info(f"Article already exists, skipping. URL: {url}")
+                continue 
             except exceptions.CosmosResourceNotFoundError:
+                pub_date_str = item.find('pubDate').text
+                dt_object = parsedate_to_datetime(pub_date_str)
+                published_at = dt_object.isoformat()
+                
                 message = {
                     "source": "HuggingFace",
                     "url": url, 
-                    "title": title
+                    "title": title,
+                    "published_at": published_at
                 }
                 queue_client.send_message(json.dumps(message, ensure_ascii=False))
                 sent_count += 1
         
         logging.info(f"Finished Hugging Face Blog collection. Sent {sent_count} new URLs to the queue.")
-
     except Exception as e:
         logging.error(f"--- FATAL ERROR in HuggingFaceBlogCollector ---")
         logging.error(traceback.format_exc())
@@ -261,6 +270,7 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         
         original_title = message.get("title", "No Title")
         source = message.get("source", "Unknown")
+        published_at = message.get("published_at", datetime.now(timezone.utc).isoformat())
 
         article_text = ""
         try:
@@ -284,7 +294,8 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=translated_title, source=source,
-                blob_name=None, original_title=original_title, status='title_only'
+                blob_name=None, original_title=original_title, status='title_only',
+                published_at=published_at
             )
             logging.info(f"Successfully processed title only for: {url}")
 
@@ -294,7 +305,8 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
 
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=translated_title, source=source,
-                blob_name=blob_name, original_title=original_title, status='summarized'
+                blob_name=blob_name, original_title=original_title, status='summarized',
+                published_at=published_at
             )
             logging.info(f"Successfully processed and summarized: {translated_title}")
 
@@ -303,10 +315,12 @@ def ArticleSummarizer(msg: func.QueueMessage) -> None:
         logging.error(traceback.format_exc())
 
         if message and item_id:
+            published_at_on_fail = message.get("published_at", datetime.now(timezone.utc).isoformat())
             _upsert_metadata_to_cosmos(
                 item_id=item_id, url=url, title=message.get("title", "No Title"),
                 source=message.get("source", "Unknown"), blob_name=None,
-                original_title=message.get("title", "No Title"), status='failed'
+                original_title=message.get("title", "No Title"), status='failed',
+                published_at=published_at_on_fail
             )
         raise e
     finally:
@@ -403,7 +417,7 @@ def _save_summary_to_blob(summary: str, title: str, url: str) -> str:
     logging.info(f"Summary saved to blob: {blob_name}")
     return blob_name
 
-def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str):
+def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, blob_name: str | None, original_title: str, status: str, published_at: str):
     cosmos_endpoint = os.environ.get('COSMOS_ENDPOINT')
     cosmos_key = os.environ.get('COSMOS_KEY')
     if not cosmos_endpoint or not cosmos_key:
@@ -414,7 +428,8 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
     item_body = {
         'id': item_id, 'source': source, 'url': url, 'title': title,
         'original_title': original_title, 'summary_blob_path': blob_name,
-        'processed_at': datetime.now(timezone.utc).isoformat(), 'status': status
+        'processed_at': datetime.now(timezone.utc).isoformat(), 'status': status,
+        'published_at': published_at
     }
     if blob_name is None:
         item_body['summary_blob_path'] = None
@@ -426,6 +441,7 @@ def _upsert_metadata_to_cosmos(item_id: str, url: str, title: str, source: str, 
 # ===================================================================
 fast_app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
 fast_app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.route(route="{*path}", auth_level=func.AuthLevel.ANONYMOUS, methods=["get", "post", "put", "delete"])
@@ -444,37 +460,31 @@ async def get_all_articles_data(source: str = 'All', skip: int = 0, limit: int =
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
 
-        items = []
-        if source == 'arXiv':
-            query_ai = "SELECT * FROM c WHERE c.source = 'arXiv cs.AI'"
-            items_ai = list(articles_container.query_items(query=query_ai, enable_cross_partition_query=True))
-            
-            query_lg = "SELECT * FROM c WHERE c.source = 'arXiv cs.LG'"
-            items_lg = list(articles_container.query_items(query=query_lg, enable_cross_partition_query=True))
-            
-            all_items = items_ai + items_lg
-            all_items.sort(key=lambda x: x['processed_at'], reverse=True)
-            
-            items = all_items[skip : skip + limit]
-        else:
-            parameters = []
-            query = "SELECT * FROM c"
-            if source != 'All':
+        parameters = []
+        query = "SELECT * FROM c"
+        
+        if source and source != 'All':
+            if source == 'arXiv':
+                query += " WHERE c.source = @source1 OR c.source = @source2"
+                parameters.append({"name": "@source1", "value": "arXiv cs.AI"})
+                parameters.append({"name": "@source2", "value": "arXiv cs.LG"})
+            else:
                 query += " WHERE c.source = @source"
                 parameters.append({"name": "@source", "value": source})
-
-            query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
-
-            items = list(articles_container.query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True
-            ))
-
+        
+        query += f" ORDER BY c.processed_at DESC OFFSET {skip} LIMIT {limit}"
+        
+        items = list(articles_container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True
+        ))
+        
         return items
     except Exception as e:
         logging.error(f"Error fetching articles data: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="記事データの取得中にエラーが発生しました。")
+
 
 @fast_app.get("/api/", response_class=HTMLResponse)
 @fast_app.get("/api/front", response_class=HTMLResponse)
@@ -493,7 +503,7 @@ async def read_single_article_page(request: Request, article_id: str):
         cosmos_key = os.environ.get('COSMOS_KEY')
         storage_conn_str = os.environ.get("MyStorageQueueConnectionString")
         if not all([cosmos_endpoint, cosmos_key, storage_conn_str]):
-             raise HTTPException(status_code=500, detail="接続設定が不完全です。")
+            raise HTTPException(status_code=500, detail="接続設定が不完全です。")
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
@@ -544,7 +554,7 @@ async def read_article(request: Request, article_id: str):
         cosmos_key = os.environ.get('COSMOS_KEY')
         storage_conn_str = os.environ.get("MyStorageQueueConnectionString")
         if not all([cosmos_endpoint, cosmos_key, storage_conn_str]):
-             raise HTTPException(status_code=500, detail="接続設定が不完全です。")
+                raise HTTPException(status_code=500, detail="接続設定が不完全です。")
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
@@ -592,7 +602,7 @@ async def generate_rss_feed(request: Request):
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 50"
+        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.published_at DESC OFFSET 0 LIMIT 50"
         items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
 
         blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
@@ -610,7 +620,7 @@ async def generate_rss_feed(request: Request):
         ET.SubElement(channel, "description").text = "Hacker NewsやarXivなどの最新技術記事の要約"
         ET.SubElement(channel, "language").text = "ja"
         ET.SubElement(channel, "lastBuildDate").text = formatdate(datetime.now(timezone.utc).timestamp(), usegmt=True)
-        ET.SubElement(channel, "atom:link", href=urljoin(base_url, "api/rss"), rel="self", type="application/rss+xml")
+        ET.SubElement(channel, "atom:link", href=str(request.url), rel="self", type="application/rss+xml")
 
         for item in items:
             item_elem = ET.SubElement(channel, "item")
@@ -624,7 +634,7 @@ async def generate_rss_feed(request: Request):
             ET.SubElement(item_elem, "link").text = article_link
             ET.SubElement(item_elem, "guid", isPermaLink="false").text = item['id']
 
-            pub_date_str = item.get('processed_at')
+            pub_date_str = item.get('published_at') # 'processed_at'から変更
             if pub_date_str:
                 dt_object = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
                 ET.SubElement(item_elem, "pubDate").text = formatdate(dt_object.timestamp(), usegmt=True)
@@ -635,7 +645,8 @@ async def generate_rss_feed(request: Request):
                 try:
                     blob_client = blob_service_client.get_blob_client(container=summary_container_name, blob=blob_path)
                     if blob_client.exists():
-                        description = blob_client.download_blob().readall().decode('utf-8')
+                        markdown_content = blob_client.download_blob().readall().decode('utf-8')
+                        description = markdown.markdown(markdown_content) # MarkdownをHTMLに変換
                     else:
                         logging.warning(f"Summary blob not found for RSS: {blob_path}")
                         description = "要約ファイルが見つかりませんでした。"
@@ -648,7 +659,7 @@ async def generate_rss_feed(request: Request):
         rss_string = ET.tostring(rss, encoding='UTF-8', method='xml', xml_declaration=True).decode('utf-8')
         return Response(content=rss_string, media_type="application/rss+xml; charset=utf-8")
         
-   except Exception as e:
+    except Exception as e:
         logging.error(f"Error generating RSS feed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"RSSフィードの生成中にエラーが発生しました: {e}")
     
@@ -665,21 +676,22 @@ async def generate_sitemap(request: Request):
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
         
-        query = "SELECT c.id, c.processed_at FROM c WHERE c.status = 'summarized'"
+        query = "SELECT c.id, c.published_at FROM c WHERE c.status = 'summarized'" # `processed_at`から`published_at`に変更
         items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
 
         urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
-
         base_url = str(request.base_url)
 
         for item in items:
+            if 'published_at' not in item: continue # published_atがない古いデータはスキップ
+
             url_element = ET.SubElement(urlset, "url")
             
             loc = ET.SubElement(url_element, "loc")
             loc.text = urljoin(base_url, f"article/{item['id']}")
             
             lastmod = ET.SubElement(url_element, "lastmod")
-            lastmod.text = datetime.fromisoformat(item['processed_at'].replace('Z', '+00:00')).strftime('%Y-%m-%d')
+            lastmod.text = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00')).strftime('%Y-%m-%d')
             
             ET.SubElement(url_element, "changefreq").text = "daily"
             ET.SubElement(url_element, "priority").text = "0.8"
@@ -693,5 +705,12 @@ async def generate_sitemap(request: Request):
 
 @fast_app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def redirect_root_to_front():
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/api/front")
+
+@fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
+async def read_google_verification():
+    return "static/googlec43f505db609c105.html"
+
+@fast_app.get("/robots.txt", response_class=FileResponse, include_in_schema=False)
+async def read_robots_txt():
+    return "static/robots.txt"
