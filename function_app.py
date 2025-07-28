@@ -8,6 +8,7 @@ import traceback
 import time
 import markdown
 import xml.etree.ElementTree as ET
+import re
 
 from datetime import datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
@@ -17,6 +18,8 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, HTMLResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import RedirectResponse
+from starlette.status import HTTP_301_MOVED_PERMANENTLY
 
 from azure.cosmos import CosmosClient, exceptions
 from azure.core.exceptions import ResourceExistsError
@@ -602,7 +605,7 @@ async def generate_rss_feed(request: Request):
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.published_at DESC OFFSET 0 LIMIT 50"
+        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
         items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
 
         blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
@@ -643,10 +646,18 @@ async def generate_rss_feed(request: Request):
             blob_path = item.get('summary_blob_path')
             if blob_path:
                 try:
+                    # 不正なXML文字を削除するための正規表現
+                    illegal_xml_chars_re = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]')
+                    
                     blob_client = blob_service_client.get_blob_client(container=summary_container_name, blob=blob_path)
                     if blob_client.exists():
                         markdown_content = blob_client.download_blob().readall().decode('utf-8')
-                        description = markdown.markdown(markdown_content) # MarkdownをHTMLに変換
+                        
+                        # STEP 1: 不正な文字を削除する
+                        clean_content = illegal_xml_chars_re.sub('', markdown_content)
+                        
+                        # STEP 2: クリーンなテキストをHTMLに変換する
+                        description = markdown.markdown(clean_content)
                     else:
                         logging.warning(f"Summary blob not found for RSS: {blob_path}")
                         description = "要約ファイルが見つかりませんでした。"
@@ -705,7 +716,8 @@ async def generate_sitemap(request: Request):
 
 @fast_app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def redirect_root_to_front():
-    return RedirectResponse(url="/api/front")
+    # status_codeを301に指定する
+    return RedirectResponse(url="/api/front", status_code=HTTP_301_MOVED_PERMANENTLY)
 
 @fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
 async def read_google_verification():
