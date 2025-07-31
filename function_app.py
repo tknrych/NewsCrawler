@@ -605,7 +605,7 @@ async def generate_rss_feed(request: Request):
         cosmos_client = CosmosClient(cosmos_endpoint, credential=cosmos_key)
         db_client = cosmos_client.get_database_client(os.environ['COSMOS_DATABASE_NAME'])
         articles_container = db_client.get_container_client(os.environ['COSMOS_CONTAINER_NAME'])
-        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 200"
+        query = "SELECT * FROM c WHERE c.status = 'summarized' ORDER BY c.processed_at DESC OFFSET 0 LIMIT 400"
         items = list(articles_container.query_items(query=query, enable_cross_partition_query=True))
 
         blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
@@ -703,7 +703,10 @@ async def generate_sitemap(request: Request):
             
             lastmod = ET.SubElement(url_element, "lastmod")
             lastmod.text = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00')).strftime('%Y-%m-%d')
-            
+
+            dt_object = datetime.fromisoformat(item['published_at'].replace('Z', '+00:00'))
+            lastmod.text = dt_object.isoformat()           
+
             ET.SubElement(url_element, "changefreq").text = "daily"
             ET.SubElement(url_element, "priority").text = "0.8"
 
