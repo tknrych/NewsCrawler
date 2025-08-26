@@ -33,6 +33,11 @@
     }
     </script>
 
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="{{ title }}" />
+    <meta name="twitter:description" content="{{ summary | striptags | truncate(120) }}" />
+    <meta name="twitter:url" content="{{ request.url }}" />
+    <meta name="twitter:image" content="https://news.spiralhub.tech/static/favicon.png" />
     <link rel="icon" href="/static/favicon.png" type="image/png">
     <style>
         body {
@@ -94,7 +99,6 @@
             }
         }
     </style>
-    <!-- Google tag (gtag.js) -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-38799XKMNM"></script>
     <script>
         window.dataLayer = window.dataLayer || [];
