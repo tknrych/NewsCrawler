@@ -611,12 +611,26 @@ async def generate_rss_feed(request: Request):
         blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
         summary_container_name = os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries")
 
-        rss = ET.Element("rss", version="2.0", attrib={"xmlns:atom": "http://www.w3.org/2005/Atom"})
+        # ===================================================================
+        # ▼▼▼ 変更点 1: mediaの名前空間を追加 ▼▼▼
+        # ===================================================================
+        rss = ET.Element("rss", version="2.0", attrib={
+            "xmlns:atom": "http://www.w3.org/2005/Atom",
+            "xmlns:media": "http://search.yahoo.com/mrss/"
+        })
+        # ===================================================================
+        
         channel = ET.SubElement(rss, "channel")
 
         site_title = "Tech News Summarizer"
         base_url = str(request.base_url)
         site_link = urljoin(base_url, "api/front")
+        
+        # ===================================================================
+        # ▼▼▼ 変更点 2: ロゴ画像のURLを定義 ▼▼▼
+        # ===================================================================
+        logo_url = urljoin(base_url, "static/news-crawler-log.png")
+        # ===================================================================
 
         ET.SubElement(channel, "title").text = site_title
         ET.SubElement(channel, "link").text = site_link
@@ -637,6 +651,16 @@ async def generate_rss_feed(request: Request):
             ET.SubElement(item_elem, "link").text = article_link
             ET.SubElement(item_elem, "guid", isPermaLink="false").text = item['id']
 
+            # ===================================================================
+            # ▼▼▼ 変更点 3: media:contentタグをitemに追加 ▼▼▼
+            # ===================================================================
+            ET.SubElement(item_elem, "media:content", {
+                "url": logo_url,
+                "type": "image/png",
+                "medium": "image"
+            })
+            # ===================================================================
+            
             pub_date_str = item.get('published_at') # 'processed_at'から変更
             if pub_date_str:
                 dt_object = datetime.fromisoformat(pub_date_str.replace('Z', '+00:00'))
@@ -725,6 +749,10 @@ async def redirect_root_to_front():
 @fast_app.get("/googlec43f505db609c105.html", response_class=FileResponse, include_in_schema=False)
 async def read_google_verification():
     return "static/googlec43f505db609c105.html"
+
+@fast_app.get("/BingSiteAuth.xml", response_class=FileResponse, include_in_schema=False)
+async def read_bing_verification():
+    return "static/BingSiteAuth.xml"
 
 @fast_app.get("/robots.txt", response_class=FileResponse, include_in_schema=False)
 async def read_robots_txt():
