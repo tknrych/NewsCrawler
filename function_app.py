@@ -639,10 +639,20 @@ async def generate_rss_feed(request: Request):
         ET.SubElement(channel, "lastBuildDate").text = formatdate(datetime.now(timezone.utc).timestamp(), usegmt=True)
         ET.SubElement(channel, "atom:link", href=str(request.url), rel="self", type="application/rss+xml")
 
-        for item in items:
-            item_elem = ET.SubElement(channel, "item")
+        # for item in items:
+        #     item_elem = ET.SubElement(channel, "item")
+        #     source_text = item.get('source', 'Unknown')
 
+        processed_ids = set()
+        for item in items:
+            # ▼▼▼ 変更点：IDの重複をチェックし、重複していればスキップ ▼▼▼
+            item_id = item.get('id')
+            if not item_id or item_id in processed_ids:
+                continue  # idが存在しないか、既に処理済みの場合はこのアイテムをスキップ    
+            processed_ids.add(item_id) # 処理済みとしてidをセットに追加
+            item_elem = ET.SubElement(channel, "item")
             source_text = item.get('source', 'Unknown')
+
             original_title = item.get('title', 'No Title')
             ET.SubElement(item_elem, "title").text = f"[{source_text}] {original_title}"
             ET.SubElement(item_elem, "category").text = source_text
@@ -681,7 +691,13 @@ async def generate_rss_feed(request: Request):
                         clean_content = illegal_xml_chars_re.sub('', markdown_content)
                         
                         # STEP 2: クリーンなテキストをHTMLに変換する
-                        description = markdown.markdown(clean_content)
+                        html_content = markdown.markdown(clean_content)
+
+                        # STEP 3: 不要なタグを正規表現で削除（resourceとactionの両方に対応）
+                        html_content = re.sub(r'</?(resource|action).*?>', '', html_content, flags=re.IGNORECASE)
+                        
+                        # STEP 4: 処理済みのHTMLをdescriptionに設定
+                        description = html_content
                     else:
                         logging.warning(f"Summary blob not found for RSS: {blob_path}")
                         description = "要約ファイルが見つかりませんでした。"
