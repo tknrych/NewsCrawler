@@ -611,14 +611,10 @@ async def generate_rss_feed(request: Request):
         blob_service_client = BlobServiceClient.from_connection_string(storage_conn_str)
         summary_container_name = os.environ.get("SUMMARY_BLOB_CONTAINER_NAME", "summaries")
 
-        # ===================================================================
-        # ▼▼▼ 変更点 1: mediaの名前空間を追加 ▼▼▼
-        # ===================================================================
         rss = ET.Element("rss", version="2.0", attrib={
             "xmlns:atom": "http://www.w3.org/2005/Atom",
             "xmlns:media": "http://search.yahoo.com/mrss/"
         })
-        # ===================================================================
         
         channel = ET.SubElement(rss, "channel")
 
@@ -626,11 +622,7 @@ async def generate_rss_feed(request: Request):
         base_url = str(request.base_url)
         site_link = urljoin(base_url, "api/front")
         
-        # ===================================================================
-        # ▼▼▼ 変更点 2: ロゴ画像のURLを定義 ▼▼▼
-        # ===================================================================
-        logo_url = urljoin(base_url, "static/news-crawler-log.jpg")
-        # ===================================================================
+        logo_url = urljoin(base_url, "static/news-crawler-log.png")
 
         ET.SubElement(channel, "title").text = site_title
         ET.SubElement(channel, "link").text = site_link
