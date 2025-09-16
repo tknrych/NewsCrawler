@@ -629,7 +629,7 @@ async def generate_rss_feed(request: Request):
         # ===================================================================
         # ▼▼▼ 変更点 2: ロゴ画像のURLを定義 ▼▼▼
         # ===================================================================
-        logo_url = urljoin(base_url, "static/news-crawler-log.png")
+        logo_url = urljoin(base_url, "static/news-crawler-log.jpg")
         # ===================================================================
 
         ET.SubElement(channel, "title").text = site_title
